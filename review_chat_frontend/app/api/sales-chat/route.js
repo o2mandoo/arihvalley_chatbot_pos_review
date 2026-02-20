@@ -2,7 +2,7 @@ import { resolveBackendConfig } from '@/lib/backend-url';
 
 const SALES_FORCE_PREFIX = '매출 분석 질문: ';
 
-function toTextChunks(text, chunkSize = 30, delayMs = 10) {
+function toTextChunks(text, chunkSize = 1, delayMs = 12) {
   const encoder = new TextEncoder();
   let offset = 0;
 

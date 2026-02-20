@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import date
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,6 +58,12 @@ class SalesAnswer:
     sql: str
     markdown: str
     row_count: int
+
+
+@dataclass(frozen=True)
+class SalesPeriodScope:
+    where_sql: str
+    label: str
 
 
 class SalesAnalysisService:
@@ -219,7 +226,142 @@ class SalesAnalysisService:
         return max(1, min(default, 30))
 
     @staticmethod
-    def _with_base_sales_cte(days: Optional[int] = None, day_offset: Optional[int] = None) -> str:
+    def _has_absolute_period_reference(question: str) -> bool:
+        normalized = re.sub(r"\s+", "", question).lower()
+        patterns = (
+            r"(?<!\d)\d{2,4}년\d{1,2}월(\d{1,2}일)?",
+            r"(?<!\d)\d{2,4}[./-]\d{1,2}([./-]\d{1,2})?(?!\d)",
+            r"(올해|금년|작년)\d{1,2}월",
+        )
+        return any(re.search(pattern, normalized) for pattern in patterns)
+
+    @staticmethod
+    def _normalize_year(raw_year: int) -> int:
+        if raw_year < 100:
+            return 2000 + raw_year
+        return raw_year
+
+    @staticmethod
+    def _month_bounds(year: int, month: int) -> Optional[Tuple[date, date]]:
+        if month < 1 or month > 12:
+            return None
+        try:
+            start = date(year, month, 1)
+        except ValueError:
+            return None
+        if month == 12:
+            return start, date(year + 1, 1, 1)
+        return start, date(year, month + 1, 1)
+
+    def _latest_sales_year(self) -> int:
+        if "sales_date" not in self.data_store.sales_df.columns:
+            return date.today().year
+        date_series = pd.to_datetime(self.data_store.sales_df["sales_date"], errors="coerce")
+        if date_series.isna().all():
+            return date.today().year
+        return int(date_series.dt.year.max())
+
+    def _extract_period_scope(self, question: str) -> Optional[SalesPeriodScope]:
+        normalized = re.sub(r"\s+", "", question).lower()
+
+        if any(token in normalized for token in ("이번달", "당월")):
+            return SalesPeriodScope(
+                where_sql=(
+                    "DATE_TRUNC('month', sales_date) = "
+                    "(SELECT DATE_TRUNC('month', MAX(sales_date)) FROM sales WHERE sales_date IS NOT NULL)"
+                ),
+                label="이번달",
+            )
+
+        if any(token in normalized for token in ("지난달", "전월", "이전달")):
+            return SalesPeriodScope(
+                where_sql=(
+                    "DATE_TRUNC('month', sales_date) = "
+                    "(SELECT DATE_TRUNC('month', MAX(sales_date)) - INTERVAL 1 MONTH "
+                    "FROM sales WHERE sales_date IS NOT NULL)"
+                ),
+                label="지난달",
+            )
+
+        day_patterns = (
+            r"(?<!\d)(\d{2,4})년(\d{1,2})월(\d{1,2})일",
+            r"(?<!\d)(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})(?!\d)",
+        )
+        for pattern in day_patterns:
+            matched = re.search(pattern, normalized)
+            if not matched:
+                continue
+            try:
+                year = self._normalize_year(int(matched.group(1)))
+                month = int(matched.group(2))
+                day = int(matched.group(3))
+                selected = date(year, month, day)
+            except ValueError:
+                continue
+            day_text = selected.strftime("%Y-%m-%d")
+            return SalesPeriodScope(
+                where_sql=f"sales_date = DATE '{day_text}'",
+                label=day_text,
+            )
+
+        month_patterns = (
+            r"(?<!\d)(\d{2,4})년(\d{1,2})월",
+            r"(?<!\d)(\d{2,4})[./-](\d{1,2})(?!\d)",
+        )
+        for pattern in month_patterns:
+            matched = re.search(pattern, normalized)
+            if not matched:
+                continue
+            try:
+                year = self._normalize_year(int(matched.group(1)))
+                month = int(matched.group(2))
+            except ValueError:
+                continue
+            bounds = self._month_bounds(year, month)
+            if not bounds:
+                continue
+            start, end = bounds
+            month_text = start.strftime("%Y-%m")
+            return SalesPeriodScope(
+                where_sql=f"sales_date >= DATE '{start}' AND sales_date < DATE '{end}'",
+                label=month_text,
+            )
+
+        relative_month = re.search(r"(올해|금년|작년)(\d{1,2})월", normalized)
+        if relative_month:
+            latest_year = self._latest_sales_year()
+            year_token = relative_month.group(1)
+            year = latest_year if year_token in ("올해", "금년") else latest_year - 1
+            try:
+                month = int(relative_month.group(2))
+            except ValueError:
+                month = 0
+            bounds = self._month_bounds(year, month)
+            if bounds:
+                start, end = bounds
+                month_text = start.strftime("%Y-%m")
+                return SalesPeriodScope(
+                    where_sql=f"sales_date >= DATE '{start}' AND sales_date < DATE '{end}'",
+                    label=month_text,
+                )
+
+        return None
+
+    @staticmethod
+    def _with_base_sales_cte(
+        days: Optional[int] = None,
+        day_offset: Optional[int] = None,
+        period_scope: Optional[SalesPeriodScope] = None,
+    ) -> str:
+        if period_scope is not None:
+            return f"""
+WITH base_sales AS (
+  SELECT * FROM sales
+  WHERE sales_date IS NOT NULL
+    AND ({period_scope.where_sql})
+)
+""".strip()
+
         if day_offset is not None:
             offset = max(0, day_offset)
             return f"""
@@ -264,8 +406,13 @@ WITH base_sales AS (
 )
 """.strip()
 
-    def _sales_summary_sql(self, days: Optional[int] = None, day_offset: Optional[int] = None) -> str:
-        with_clause = self._with_base_sales_cte(days=days, day_offset=day_offset)
+    def _sales_summary_sql(
+        self,
+        days: Optional[int] = None,
+        day_offset: Optional[int] = None,
+        period_scope: Optional[SalesPeriodScope] = None,
+    ) -> str:
+        with_clause = self._with_base_sales_cte(days=days, day_offset=day_offset, period_scope=period_scope)
         return f"""
 {with_clause}
 SELECT
@@ -277,8 +424,13 @@ SELECT
 FROM base_sales
 """.strip()
 
-    def _order_count_sql(self, days: Optional[int] = None, day_offset: Optional[int] = None) -> str:
-        with_clause = self._with_base_sales_cte(days=days, day_offset=day_offset)
+    def _order_count_sql(
+        self,
+        days: Optional[int] = None,
+        day_offset: Optional[int] = None,
+        period_scope: Optional[SalesPeriodScope] = None,
+    ) -> str:
+        with_clause = self._with_base_sales_cte(days=days, day_offset=day_offset, period_scope=period_scope)
         return f"""
 {with_clause}
 SELECT
@@ -288,8 +440,8 @@ SELECT
 FROM base_sales
 """.strip()
 
-    def _daily_sales_trend_sql(self, days: int = 30) -> str:
-        with_clause = self._with_base_sales_cte(days=days)
+    def _daily_sales_trend_sql(self, days: int = 30, period_scope: Optional[SalesPeriodScope] = None) -> str:
+        with_clause = self._with_base_sales_cte(days=days, period_scope=period_scope)
         return f"""
 {with_clause}
 SELECT
@@ -302,8 +454,8 @@ GROUP BY sales_date
 ORDER BY sales_date ASC
 """.strip()
 
-    def _branch_sales_sql(self, days: Optional[int] = None) -> str:
-        with_clause = self._with_base_sales_cte(days=days)
+    def _branch_sales_sql(self, days: Optional[int] = None, period_scope: Optional[SalesPeriodScope] = None) -> str:
+        with_clause = self._with_base_sales_cte(days=days, period_scope=period_scope)
         return f"""
 {with_clause}
 SELECT
@@ -316,8 +468,8 @@ ORDER BY total_sales DESC
 LIMIT 20
 """.strip()
 
-    def _channel_sales_sql(self, days: Optional[int] = None) -> str:
-        with_clause = self._with_base_sales_cte(days=days)
+    def _channel_sales_sql(self, days: Optional[int] = None, period_scope: Optional[SalesPeriodScope] = None) -> str:
+        with_clause = self._with_base_sales_cte(days=days, period_scope=period_scope)
         return f"""
 {with_clause}
 SELECT
@@ -331,8 +483,8 @@ ORDER BY total_sales DESC
 LIMIT 20
 """.strip()
 
-    def _category_sales_sql(self, days: Optional[int] = None) -> str:
-        with_clause = self._with_base_sales_cte(days=days)
+    def _category_sales_sql(self, days: Optional[int] = None, period_scope: Optional[SalesPeriodScope] = None) -> str:
+        with_clause = self._with_base_sales_cte(days=days, period_scope=period_scope)
         return f"""
 {with_clause}
 SELECT
@@ -345,8 +497,8 @@ ORDER BY total_sales DESC
 LIMIT 20
 """.strip()
 
-    def _hourly_aov_sql(self, days: Optional[int] = None) -> str:
-        with_clause = self._with_base_sales_cte(days=days)
+    def _hourly_aov_sql(self, days: Optional[int] = None, period_scope: Optional[SalesPeriodScope] = None) -> str:
+        with_clause = self._with_base_sales_cte(days=days, period_scope=period_scope)
         return f"""
 {with_clause}
 SELECT
@@ -361,8 +513,14 @@ ORDER BY avg_order_value DESC, total_sales DESC
 LIMIT 24
 """.strip()
 
-    def _day_sales_ranking_sql(self, days: Optional[int] = None, descending: bool = True, limit: int = 1) -> str:
-        with_clause = self._with_base_sales_cte(days=days)
+    def _day_sales_ranking_sql(
+        self,
+        days: Optional[int] = None,
+        descending: bool = True,
+        limit: int = 1,
+        period_scope: Optional[SalesPeriodScope] = None,
+    ) -> str:
+        with_clause = self._with_base_sales_cte(days=days, period_scope=period_scope)
         order_direction = "DESC" if descending else "ASC"
         tie_direction = "DESC" if descending else "ASC"
         safe_limit = max(1, min(int(limit), 30))
@@ -413,21 +571,27 @@ ORDER BY CASE WHEN month_bucket = '지난달' THEN 1 ELSE 2 END
 """.strip()
 
     def _fallback_sql(self, question: str) -> str:
+        period_scope = self._extract_period_scope(question)
         if self._is_day_ranking_intent(question):
             return self._day_sales_ranking_sql(
-                days=30 if self._has_recent_hint(question) else None,
+                days=30 if (self._has_recent_hint(question) and period_scope is None) else None,
                 descending=not self._is_day_low_ranking_intent(question),
                 limit=self._extract_ranking_limit(question, default=1),
+                period_scope=period_scope,
             )
         if self._is_daily_breakdown_intent(question):
-            return self._daily_sales_trend_sql(days=30)
-        return self._sales_summary_sql(days=30 if self._has_recent_hint(question) else None)
+            return self._daily_sales_trend_sql(days=30, period_scope=period_scope)
+        return self._sales_summary_sql(
+            days=30 if (self._has_recent_hint(question) and period_scope is None) else None,
+            period_scope=period_scope,
+        )
 
     def _fast_template_sql(self, question: str) -> str:
         lowered = question.lower()
         days = self._extract_recent_days(question)
         day_offset = self._extract_single_day_offset(question)
         has_recent_hint = self._has_recent_hint(question)
+        period_scope = self._extract_period_scope(question)
 
         has_sales_token = any(token in lowered for token in ("매출", "금액", "매상", "revenue", "sales"))
         has_order_token = any(token in lowered for token in ("주문", "order"))
@@ -435,32 +599,47 @@ ORDER BY CASE WHEN month_bucket = '지난달' THEN 1 ELSE 2 END
         wants_aov = any(token in lowered for token in ("객단가", "평균 주문", "평균주문", "aov"))
         wants_month_compare = any(token in lowered for token in ("전월", "지난달", "이번달", "전 달"))
 
-        if wants_month_compare and has_sales_token:
+        if wants_month_compare and has_sales_token and not self._has_absolute_period_reference(question):
             return self._month_compare_sql()
 
         if self._is_day_ranking_intent(question):
             return self._day_sales_ranking_sql(
-                days=days if (days or has_recent_hint) else None,
+                days=days if ((days or has_recent_hint) and period_scope is None) else None,
                 descending=not self._is_day_low_ranking_intent(question),
                 limit=self._extract_ranking_limit(question, default=1),
+                period_scope=period_scope,
             )
 
         if self._is_channel_breakdown_intent(question):
-            return self._channel_sales_sql(days=days if (days or has_recent_hint) else None)
+            return self._channel_sales_sql(
+                days=days if ((days or has_recent_hint) and period_scope is None) else None,
+                period_scope=period_scope,
+            )
 
         if self._is_category_breakdown_intent(question):
-            return self._category_sales_sql(days=days if (days or has_recent_hint) else None)
+            return self._category_sales_sql(
+                days=days if ((days or has_recent_hint) and period_scope is None) else None,
+                period_scope=period_scope,
+            )
 
         if self._is_branch_breakdown_intent(question):
-            return self._branch_sales_sql(days=days if (days or has_recent_hint) else None)
+            return self._branch_sales_sql(
+                days=days if ((days or has_recent_hint) and period_scope is None) else None,
+                period_scope=period_scope,
+            )
 
         if self._is_daily_breakdown_intent(question):
-            return self._daily_sales_trend_sql(days=days or 30)
+            return self._daily_sales_trend_sql(days=days or 30, period_scope=period_scope)
 
         if wants_aov:
-            return self._hourly_aov_sql(days=days or 30 if has_recent_hint else None)
+            return self._hourly_aov_sql(
+                days=days or 30 if (has_recent_hint and period_scope is None) else None,
+                period_scope=period_scope,
+            )
 
         if has_order_token and wants_count and not has_sales_token:
+            if period_scope is not None:
+                return self._order_count_sql(period_scope=period_scope)
             if day_offset is not None:
                 return self._order_count_sql(days=1, day_offset=day_offset)
             if days is not None:
@@ -468,6 +647,8 @@ ORDER BY CASE WHEN month_bucket = '지난달' THEN 1 ELSE 2 END
             return self._order_count_sql(days=30 if has_recent_hint else None)
 
         if has_sales_token or has_order_token:
+            if period_scope is not None:
+                return self._sales_summary_sql(period_scope=period_scope)
             if day_offset is not None:
                 return self._sales_summary_sql(days=1, day_offset=day_offset)
             if days is not None:
@@ -498,6 +679,7 @@ Rules:
 - Use sales_date for date filtering and trends
 - For amount metrics, use net_sales_amount
 - For order count, use COUNT(DISTINCT order_key)
+- If the user specifies a concrete date/month/year (e.g., 26년 2월, 2026-02, 2026-02-14), SQL must strictly filter that exact period.
 - If user asks highest/lowest sales day, aggregate by sales_date and rank by total_sales.
 - If result can be large, include LIMIT 100
 - DuckDB syntax only
@@ -734,6 +916,9 @@ Rules:
                 label = self._format_dimension_label(query_result.loc[top_idx, label_col])
                 bullets.append(f"- 가장 높은 매출 구간은 **{label} ({self._format_currency(top_val)})**입니다.")
 
+        bullets.extend(self._build_month_bucket_insights(query_result))
+        bullets.extend(self._build_breakdown_concentration_insights(query_result))
+        bullets.extend(self._build_ranking_scope_insights(question, query_result))
         bullets.extend(self._build_period_comparison_insights(question, query_result))
 
         if not bullets:
@@ -742,9 +927,9 @@ Rules:
 
     def _build_period_comparison_insights(self, question: str, query_result: pd.DataFrame) -> List[str]:
         days = self._extract_recent_days(question)
-        if days is None and self._has_recent_hint(question):
+        if days is None:
             days = self._infer_days_from_result_range(query_result)
-        if days is None or days <= 0:
+        if days is None or days <= 0 or days > 90:
             return []
 
         try:
@@ -806,6 +991,189 @@ Rules:
             lines.append(category_line)
 
         return lines
+
+    def _build_month_bucket_insights(self, query_result: pd.DataFrame) -> List[str]:
+        if len(query_result) < 2:
+            return []
+
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+        month_bucket_col = self._find_column_name(lookup, ("month_bucket",))
+        total_sales_col = self._find_column_name(lookup, ("total_sales",))
+        order_count_col = self._find_column_name(lookup, ("order_count",))
+        aov_col = self._find_column_name(lookup, ("avg_order_value",))
+
+        if month_bucket_col is None or total_sales_col is None:
+            return []
+
+        bucket_map: Dict[str, pd.Series] = {}
+        for _, row in query_result.iterrows():
+            bucket = str(row[month_bucket_col]).strip().replace(" ", "")
+            if bucket in ("이번달", "current"):
+                bucket_map["current"] = row
+            elif bucket in ("지난달", "전월", "previous"):
+                bucket_map["previous"] = row
+
+        current = bucket_map.get("current")
+        previous = bucket_map.get("previous")
+        if current is None or previous is None:
+            return []
+
+        current_sales = self._to_float(current[total_sales_col])
+        previous_sales = self._to_float(previous[total_sales_col])
+        current_orders = self._to_float(current[order_count_col]) if order_count_col else 0.0
+        previous_orders = self._to_float(previous[order_count_col]) if order_count_col else 0.0
+        current_aov = self._to_float(current[aov_col]) if aov_col else 0.0
+        previous_aov = self._to_float(previous[aov_col]) if aov_col else 0.0
+
+        sales_delta = current_sales - previous_sales
+        orders_delta = current_orders - previous_orders
+        aov_delta = current_aov - previous_aov
+
+        lines: List[str] = []
+        lines.append(
+            (
+                "- 이번달은 지난달 대비 매출 **{sales_delta} ({sales_pct})**, "
+                "주문 **{orders_delta} ({orders_pct})**, 객단가 **{aov_delta} ({aov_pct})** 변화입니다."
+            ).format(
+                sales_delta=self._format_signed_currency(sales_delta),
+                sales_pct=self._format_signed_percent(self._pct_delta(current_sales, previous_sales)),
+                orders_delta=self._format_signed_count(orders_delta),
+                orders_pct=self._format_signed_percent(self._pct_delta(current_orders, previous_orders)),
+                aov_delta=self._format_signed_currency(aov_delta),
+                aov_pct=self._format_signed_percent(self._pct_delta(current_aov, previous_aov)),
+            )
+        )
+
+        if sales_delta > 0 and orders_delta > 0:
+            lines.append("- 월 매출 개선은 **방문/주문량 증가**가 주도한 흐름입니다.")
+        elif sales_delta > 0 and aov_delta > 0:
+            lines.append("- 월 매출 개선은 **객단가 상승** 영향이 큰 패턴입니다.")
+        elif sales_delta < 0 and orders_delta < 0:
+            lines.append("- 월 매출 하락은 **주문 감소** 영향이 주요 원인으로 보입니다.")
+        elif sales_delta < 0 and aov_delta < 0:
+            lines.append("- 주문량은 유지됐지만 **객단가 하락**이 매출 감소에 기여했습니다.")
+
+        return lines
+
+    def _build_breakdown_concentration_insights(self, query_result: pd.DataFrame) -> List[str]:
+        if len(query_result) < 2:
+            return []
+
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+        total_sales_col = self._find_column_name(lookup, ("total_sales",))
+        if total_sales_col is None:
+            return []
+
+        excluded = {total_sales_col}
+        for metric_col in (
+            self._find_column_name(lookup, ("order_count",)),
+            self._find_column_name(lookup, ("avg_order_value",)),
+            self._find_column_name(lookup, ("month_bucket",)),
+            self._find_column_name(lookup, ("sales_date",)),
+            self._find_column_name(lookup, ("start_date",)),
+            self._find_column_name(lookup, ("end_date",)),
+        ):
+            if metric_col is not None:
+                excluded.add(metric_col)
+
+        label_col = next((column for column in query_result.columns if column not in excluded), None)
+        if label_col is None:
+            return []
+
+        sales = pd.to_numeric(query_result[total_sales_col], errors="coerce").fillna(0)
+        positive = sales[sales > 0]
+        if len(positive) < 2:
+            return []
+
+        total_sales = float(positive.sum())
+        if total_sales <= 0:
+            return []
+
+        ordered = query_result.assign(_sales=sales).sort_values("_sales", ascending=False)
+        top_row = ordered.iloc[0]
+        top_name = self._format_dimension_label(top_row[label_col])
+        top_sales = float(top_row["_sales"])
+        top_share = (top_sales / total_sales) * 100
+
+        top3_sales = float(ordered.head(3)["_sales"].sum())
+        top3_share = (top3_sales / total_sales) * 100
+
+        lines = [
+            f"- **{top_name}**가 전체의 **{top_share:.1f}%**를 차지해 매출 기여도가 가장 큽니다.",
+            f"- 상위 3개 구간 집중도는 **{top3_share:.1f}%**로, 핵심 구간 관리 우선순위를 정하기 좋습니다.",
+        ]
+        return lines
+
+    def _build_ranking_scope_insights(self, question: str, query_result: pd.DataFrame) -> List[str]:
+        if len(query_result) == 0 or not self._is_day_ranking_intent(question):
+            return []
+
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+        sales_date_col = self._find_column_name(lookup, ("sales_date",))
+        total_sales_col = self._find_column_name(lookup, ("total_sales",))
+        if sales_date_col is None or total_sales_col is None:
+            return []
+
+        period_scope = self._extract_period_scope(question)
+        if period_scope is None:
+            return []
+
+        stats = self._fetch_daily_distribution_stats(period_scope.where_sql)
+        if not stats:
+            return []
+
+        active_days = int(stats.get("active_days", 0) or 0)
+        period_total_sales = float(stats.get("period_total_sales", 0.0) or 0.0)
+        avg_daily_sales = float(stats.get("avg_daily_sales", 0.0) or 0.0)
+        if active_days <= 0 or period_total_sales <= 0:
+            return []
+
+        first_row = query_result.iloc[0]
+        top_date = self._format_date(first_row[sales_date_col])
+        top_sales = self._to_float(first_row[total_sales_col])
+        if top_sales <= 0:
+            return []
+
+        share = (top_sales / period_total_sales) * 100.0
+        ratio_vs_avg = self._pct_delta(top_sales, avg_daily_sales)
+        avg_text = self._format_currency(avg_daily_sales)
+
+        lines = [
+            (
+                f"- **{period_scope.label}** 구간에서 최고 매출일은 {active_days}개 영업일 중 "
+                f"**{top_date}**이며, 일평균 **{avg_text}** 대비 "
+                f"**{self._format_signed_percent(ratio_vs_avg)}** 높았습니다."
+            ),
+            f"- 최고 매출일 1일 기여도는 해당 기간 총매출의 **{share:.1f}%**입니다.",
+        ]
+        return lines
+
+    def _fetch_daily_distribution_stats(self, where_sql: str) -> Dict[str, float]:
+        sql = f"""
+WITH daily AS (
+  SELECT
+    sales_date,
+    SUM(net_sales_amount) AS daily_sales
+  FROM sales
+  WHERE sales_date IS NOT NULL
+    AND ({where_sql})
+  GROUP BY sales_date
+)
+SELECT
+  COUNT(*) AS active_days,
+  COALESCE(SUM(daily_sales), 0) AS period_total_sales,
+  COALESCE(AVG(daily_sales), 0) AS avg_daily_sales
+FROM daily
+""".strip()
+        result = self.data_store.query(sql)
+        if len(result) == 0:
+            return {}
+        row = result.iloc[0]
+        return {
+            "active_days": float(row.get("active_days", 0) or 0),
+            "period_total_sales": float(row.get("period_total_sales", 0) or 0),
+            "avg_daily_sales": float(row.get("avg_daily_sales", 0) or 0),
+        }
 
     def _fetch_period_summary(self, days: int) -> Dict[str, float]:
         safe_days = max(1, min(int(days), 365))
@@ -953,6 +1321,13 @@ LIMIT 6
                 return 0.0
             return None
         return ((current - previous) / previous) * 100.0
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        numeric = pd.to_numeric(value, errors="coerce")
+        if pd.isna(numeric):
+            return 0.0
+        return float(numeric)
 
     @staticmethod
     def _infer_days_from_result_range(query_result: pd.DataFrame) -> Optional[int]:
@@ -1145,6 +1520,7 @@ LIMIT 6
             "total_sales": "총매출",
             "order_count": "주문 건수",
             "avg_order_value": "객단가",
+            "month_bucket": "월 구분",
             "start_date": "집계 시작일",
             "end_date": "집계 종료일",
         }

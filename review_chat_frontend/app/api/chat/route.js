@@ -1,6 +1,6 @@
 import { resolveBackendConfig } from '@/lib/backend-url';
 
-function toTextChunks(text, chunkSize = 30, delayMs = 10) {
+function toTextChunks(text, chunkSize = 1, delayMs = 12) {
   const encoder = new TextEncoder();
   let offset = 0;
 
