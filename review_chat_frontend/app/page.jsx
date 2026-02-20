@@ -1,11 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { Children, cloneElement, isValidElement, useEffect, useMemo, useRef } from 'react';
 import { useChat } from 'ai/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 
 const CHAT_STORAGE_KEY = 'review-analyst:messages:v1';
 const SALES_CHAT_URL = process.env.NEXT_PUBLIC_SALES_CHAT_URL?.trim();
@@ -24,24 +22,72 @@ const QUICK_PROMPTS = [
   '지점별로 가장 많이 언급된 불만을 비교해줘',
 ];
 
-const MARKDOWN_SCHEMA = {
-  ...defaultSchema,
-  tagNames: [...(defaultSchema.tagNames || []), 'span'],
-  attributes: {
-    ...(defaultSchema.attributes || {}),
-    span: [...((defaultSchema.attributes && defaultSchema.attributes.span) || []), ['className', 'neg-highlight']],
-  },
-};
+const NEGATIVE_HIGHLIGHT_REGEX =
+  /(웨이팅|대기|기다리|시끄럽|복잡|혼잡|늦|느리|오래\s*걸|불친절|별로|아쉽|좁|자리\s*없|비싸|가성비\s*별로|짜|싱겁|물리)/gi;
+
+function stripLegacyHighlightTags(content) {
+  return content
+    .replace(/<span[^>]*class=["']neg-highlight["'][^>]*>/gi, '')
+    .replace(/<\/span>/gi, '')
+    .replace(/<strong>/gi, '')
+    .replace(/<\/strong>/gi, '');
+}
+
+function highlightText(text, keyPrefix) {
+  const parts = text.split(NEGATIVE_HIGHLIGHT_REGEX);
+  if (parts.length <= 1) {
+    return [text];
+  }
+  return parts.map((part, index) => {
+    if (!part) return '';
+    if (index % 2 === 1) {
+      return (
+        <span key={`${keyPrefix}-${index}`} className="neg-highlight">
+          <strong>{part}</strong>
+        </span>
+      );
+    }
+    return part;
+  });
+}
+
+function highlightInline(children, keyPrefix = 'neg') {
+  return Children.toArray(children).flatMap((child, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (typeof child === 'string') {
+      return highlightText(child, key);
+    }
+    if (!isValidElement(child)) {
+      return child;
+    }
+
+    const typeName = typeof child.type === 'string' ? child.type : '';
+    if (typeName === 'code' || typeName === 'pre') {
+      return child;
+    }
+
+    if (child.props?.children) {
+      return cloneElement(child, {
+        ...child.props,
+        children: highlightInline(child.props.children, key),
+      });
+    }
+    return child;
+  });
+}
 
 function MarkdownMessage({ content }) {
+  const sanitized = stripLegacyHighlightTags(content);
+
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeRaw, [rehypeSanitize, MARKDOWN_SCHEMA]]}
       components={{
         table: ({ ...props }) => <table className="md-table" {...props} />,
         th: ({ ...props }) => <th className="md-th" {...props} />,
         td: ({ ...props }) => <td className="md-td" {...props} />,
+        p: ({ children, ...props }) => <p {...props}>{highlightInline(children, 'p')}</p>,
+        li: ({ children, ...props }) => <li {...props}>{highlightInline(children, 'li')}</li>,
         pre: ({ children, ...props }) => {
           const child = Array.isArray(children) ? children[0] : children;
           const className = child?.props?.className || '';
@@ -67,7 +113,7 @@ function MarkdownMessage({ content }) {
         code: ({ ...props }) => <code className="md-code" {...props} />,
       }}
     >
-      {content}
+      {sanitized}
     </ReactMarkdown>
   );
 }

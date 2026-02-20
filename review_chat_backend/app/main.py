@@ -31,6 +31,7 @@ review_service = ReviewAnalysisService(
     data_store=data_store,
     openai_api_key=settings.openai_api_key,
     openai_model=settings.openai_model,
+    openai_temperature=settings.openai_temperature,
     max_sql_rows=settings.max_sql_rows,
     max_table_rows=settings.max_table_rows,
 )
@@ -51,6 +52,7 @@ def health() -> Dict[str, Any]:
     return {
         "status": "ok",
         "model": settings.openai_model,
+        "temperature": settings.openai_temperature,
         "review_csv": str(settings.review_csv_path),
         "rows": len(data_store.reviews_df),
     }

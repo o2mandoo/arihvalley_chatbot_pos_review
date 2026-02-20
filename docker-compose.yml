@@ -7,6 +7,7 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.35}
     ports:
       - "8000:8000"
     restart: unless-stopped

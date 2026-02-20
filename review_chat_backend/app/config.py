@@ -46,6 +46,7 @@ class Settings:
     review_csv_path: Path
     openai_api_key: str
     openai_model: str
+    openai_temperature: float
     max_sql_rows: int = 200
     max_table_rows: int = 20
 
@@ -70,9 +71,15 @@ def get_settings() -> Settings:
         raise FileNotFoundError(f"Review CSV not found: {review_csv_path}")
 
     openai_model = os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
+    try:
+        openai_temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.35").strip())
+    except ValueError:
+        openai_temperature = 0.35
+    openai_temperature = max(0.0, min(openai_temperature, 1.0))
 
     return Settings(
         review_csv_path=review_csv_path,
         openai_api_key=openai_api_key,
         openai_model=openai_model,
+        openai_temperature=openai_temperature,
     )

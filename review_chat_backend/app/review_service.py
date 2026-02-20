@@ -1,5 +1,5 @@
-import html
 import json
+import random
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -57,10 +57,13 @@ REVISIT_INTENT_HINT = re.compile(
     r"재방문|또\s*갈|또\s*오|다시\s*방문|다시\s*올|또\s*방문",
     re.IGNORECASE,
 )
-NEGATIVE_HIGHLIGHT_PATTERN = re.compile(
-    r"웨이팅|대기|기다리|시끄럽|복잡|혼잡|늦|느리|오래\s*걸|불친절|별로|아쉽|좁|자리\s*없|비싸|가성비\s*별로|짜|싱겁|물리",
-    re.IGNORECASE,
+EMAIL_PATTERN = re.compile(
+    r"([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})"
 )
+PHONE_PATTERN = re.compile(r"(?<!\d)(01[016789]|02|0[3-9]\d)[-\s]?\d{3,4}[-\s]?\d{4}(?!\d)")
+LONG_DIGIT_PATTERN = re.compile(r"(?<!\d)\d{6,}(?!\d)")
+HANDLE_PATTERN = re.compile(r"@([A-Za-z0-9._-]{3,})")
+NAME_WITH_NIM_PATTERN = re.compile(r"([가-힣A-Za-z0-9]{2,10})님")
 NEGATIVE_ANY_PATTERN = re.compile(
     "|".join(f"(?:{pattern})" for pattern in NEGATIVE_SIGNAL_PATTERNS.values()),
     re.IGNORECASE,
@@ -90,12 +93,16 @@ class ReviewAnalysisService:
         data_store: ReviewDataStore,
         openai_api_key: str,
         openai_model: str,
+        openai_temperature: float = 0.35,
         max_sql_rows: int = 200,
         max_table_rows: int = 20,
     ):
         self.data_store = data_store
         self.client = OpenAI(api_key=openai_api_key)
         self.model = openai_model
+        self.openai_temperature = max(0.0, min(float(openai_temperature), 1.0))
+        self.answer_variation_temperature = min(1.0, self.openai_temperature * 2.0 + 0.1)
+        self._rng = random.SystemRandom()
         self.max_sql_rows = max_sql_rows
         self.max_table_rows = max_table_rows
 
@@ -283,6 +290,7 @@ LIMIT 10
         user_prompt = f"사용자 질문: {question}"
         response = self.client.chat.completions.create(
             model=self.model,
+            temperature=self.openai_temperature,
             messages=[
                 {
                     "role": "system",
@@ -429,19 +437,10 @@ LIMIT 10
             compact = re.sub(r"\s+", " ", review).strip()
             if len(compact) > 160:
                 compact = compact[:157] + "..."
-            highlighted = self._highlight_negative_terms(compact)
-            examples.append((score, highlighted))
+            examples.append((score, compact))
 
         examples.sort(key=lambda item: item[0], reverse=True)
         return [text for _, text in examples[:5]]
-
-    @staticmethod
-    def _highlight_negative_terms(text: str) -> str:
-        escaped = html.escape(text)
-        return NEGATIVE_HIGHLIGHT_PATTERN.sub(
-            lambda match: f'<span class="neg-highlight"><strong>{match.group(0)}</strong></span>',
-            escaped,
-        )
 
     def _count_hidden_negative_reviews(self, df: pd.DataFrame) -> int:
         if len(df) == 0:
@@ -586,7 +585,8 @@ LIMIT 10
         if len(query_result) == 0:
             lines.append("조회 결과가 없습니다.")
         else:
-            preview = self._localize_columns(query_result.head(self.max_table_rows))
+            preview = self._mask_sensitive_df(query_result.head(self.max_table_rows))
+            preview = self._localize_columns(preview)
             lines.append(self._df_to_markdown(preview))
             if len(query_result) > self.max_table_rows:
                 lines.append("")
@@ -607,7 +607,7 @@ LIMIT 10
             lines.append("숨은 불만 패턴이 뚜렷하게 감지되지 않았습니다.")
         else:
             for idx, text in enumerate(hidden_examples, start=1):
-                lines.append(f"{idx}. {text}")
+                lines.append(f"{idx}. {self._mask_text_pii(text)}")
         lines.append("")
 
         lines.append("### 4) 재방문 지표 (닉네임 기준 추정)")
@@ -646,12 +646,25 @@ LIMIT 10
         )
         lines.append("")
 
-        lines.append("### 6) 분석 근거 (필요 시 확인)")
         lines.append("```sql")
         lines.append(sql)
         lines.append("```")
 
         return "\n".join(lines).strip()
+
+    def _vary_sentence(self, variants: List[str], **kwargs: object) -> str:
+        if not variants:
+            return ""
+
+        temperature = self.answer_variation_temperature
+        if len(variants) == 1 or temperature <= 0.0:
+            template = variants[0]
+        elif temperature < 0.35:
+            template = variants[self._rng.randrange(min(2, len(variants)))]
+        else:
+            template = variants[self._rng.randrange(len(variants))]
+
+        return template.format(**kwargs)
 
     def _build_interpretation(
         self,
@@ -665,16 +678,40 @@ LIMIT 10
         if len(signal_df) > 0:
             top = signal_df.iloc[0]
             bullets.append(
-                f"- 가장 강한 부정 신호는 **{top['신호']}**이며, {top['언급수']}건({top['비율']})으로 관찰됩니다."
+                self._vary_sentence(
+                    [
+                        "- 가장 강한 부정 신호는 **{signal}**이며, {count}건({ratio})으로 관찰됩니다.",
+                        "- 현재 기준 최상위 이슈는 **{signal}**으로, 총 {count}건({ratio}) 언급되었습니다.",
+                        "- 부정 패턴 1순위는 **{signal}**입니다. 규모는 {count}건({ratio}) 수준입니다.",
+                    ],
+                    signal=top["신호"],
+                    count=top["언급수"],
+                    ratio=top["비율"],
+                )
             )
 
             repetitive = signal_df[signal_df["반복성"] == "반복적"]
             if len(repetitive) > 0:
                 names = ", ".join(repetitive["신호"].head(3).tolist())
-                bullets.append(f"- 반복적 신호(구조적 이슈 가능성): **{names}**")
+                bullets.append(
+                    self._vary_sentence(
+                        [
+                            "- 반복적 신호(구조적 이슈 가능성): **{names}**",
+                            "- 일회성이 아닌 반복성 이슈는 **{names}**로 확인됩니다.",
+                            "- 운영 프로세스 점검이 필요한 반복 신호는 **{names}**입니다.",
+                        ],
+                        names=names,
+                    )
+                )
             else:
                 bullets.append(
-                    "- 반복적 패턴보다 산발적 불만이 많아, 운영 이슈보다 특정 상황 이슈 가능성이 큽니다."
+                    self._vary_sentence(
+                        [
+                            "- 반복적 패턴보다 산발적 불만이 많아, 운영 이슈보다 특정 상황 이슈 가능성이 큽니다.",
+                            "- 구조적 문제보다는 특정 시간대/상황에서 발생한 불만이 상대적으로 많습니다.",
+                            "- 현재는 고정 이슈보다 단발성 이슈 성격이 더 강하게 나타납니다.",
+                        ]
+                    )
                 )
 
         positive_reviews = int(
@@ -684,7 +721,16 @@ LIMIT 10
         if positive_reviews > 0:
             hidden_ratio = (hidden_count / positive_reviews) * 100
             bullets.append(
-                f"- 칭찬 표현이 포함된 리뷰 {positive_reviews}건 중 **{hidden_count}건({hidden_ratio:.1f}%)**에서 조건부 불만이 함께 나타났습니다."
+                self._vary_sentence(
+                    [
+                        "- 칭찬 표현이 포함된 리뷰 {positive_reviews}건 중 **{hidden_count}건({hidden_ratio:.1f}%)**에서 조건부 불만이 함께 나타났습니다.",
+                        "- 긍정 리뷰 {positive_reviews}건 가운데 **{hidden_count}건({hidden_ratio:.1f}%)**은 칭찬과 불만이 동시에 존재합니다.",
+                        "- 만족 코멘트가 있는 리뷰 중 **{hidden_count}건({hidden_ratio:.1f}%)**에서 숨은 불만 신호가 포착됐습니다.",
+                    ],
+                    positive_reviews=positive_reviews,
+                    hidden_count=hidden_count,
+                    hidden_ratio=hidden_ratio,
+                )
             )
 
         branch_density = self._compute_branch_negative_density(scope_df)
@@ -692,14 +738,34 @@ LIMIT 10
             worst = branch_density.iloc[0]
             best = branch_density.iloc[-1]
             bullets.append(
-                f"- 지점별 체감 품질 편차가 있습니다. 부정비율 최고는 **{worst['지점명']}({worst['부정비율']})**, 최저는 **{best['지점명']}({best['부정비율']})**입니다."
+                self._vary_sentence(
+                    [
+                        "- 지점별 체감 품질 편차가 있습니다. 부정비율 최고는 **{worst_branch}({worst_ratio})**, 최저는 **{best_branch}({best_ratio})**입니다.",
+                        "- 지점 간 불만 밀도 차이가 보입니다. 높은 쪽은 **{worst_branch}({worst_ratio})**, 낮은 쪽은 **{best_branch}({best_ratio})**입니다.",
+                        "- 매장별 경험 편차가 확인됩니다. 부정비율 상위는 **{worst_branch}({worst_ratio})**, 하위는 **{best_branch}({best_ratio})**입니다.",
+                    ],
+                    worst_branch=worst["지점명"],
+                    worst_ratio=worst["부정비율"],
+                    best_branch=best["지점명"],
+                    best_ratio=best["부정비율"],
+                )
             )
 
         recent_ratio, prev_ratio, delta = self._compute_recent_negative_delta(scope_df)
         if recent_ratio is not None and prev_ratio is not None and delta is not None:
             direction = "상승" if delta > 0 else "하락"
             bullets.append(
-                f"- 최근 30일 부정 언급 비율은 **{recent_ratio:.1f}%**로, 직전 30일({prev_ratio:.1f}%) 대비 **{abs(delta):.1f}%p {direction}**했습니다."
+                self._vary_sentence(
+                    [
+                        "- 최근 30일 부정 언급 비율은 **{recent_ratio:.1f}%**로, 직전 30일({prev_ratio:.1f}%) 대비 **{delta_abs:.1f}%p {direction}**했습니다.",
+                        "- 부정 언급 추세는 최근 30일 **{recent_ratio:.1f}%**이며, 이전 30일 대비 **{delta_abs:.1f}%p {direction}**입니다.",
+                        "- 최근 월간 부정비율은 **{recent_ratio:.1f}%**로 집계되었고, 전월 구간보다 **{delta_abs:.1f}%p {direction}**했습니다.",
+                    ],
+                    recent_ratio=recent_ratio,
+                    prev_ratio=prev_ratio,
+                    delta_abs=abs(delta),
+                    direction=direction,
+                )
             )
 
         repeat_rate = float(revisit_metrics["repeat_rate"] or 0.0)
@@ -707,27 +773,69 @@ LIMIT 10
         if repeat_rate >= 25:
             if avg_interval_days is not None:
                 bullets.append(
-                    f"- 재방문 비율이 **{repeat_rate:.1f}%**로 높은 편이며, 평균 방문 간격은 **{avg_interval_days:.1f}일**입니다. 멤버십/쿠폰 회전 주기를 이 간격에 맞추면 효율이 좋습니다."
+                    self._vary_sentence(
+                        [
+                            "- 재방문 비율이 **{repeat_rate:.1f}%**로 높은 편이며, 평균 방문 간격은 **{avg_interval_days:.1f}일**입니다. 멤버십/쿠폰 회전 주기를 이 간격에 맞추면 효율이 좋습니다.",
+                            "- 재방문율 **{repeat_rate:.1f}%**와 평균 간격 **{avg_interval_days:.1f}일**을 기준으로 리텐션 쿠폰 주기를 설계하면 효과적입니다.",
+                            "- 충성 고객 비중이 높습니다(재방문율 **{repeat_rate:.1f}%**). 평균 재방문 간격 **{avg_interval_days:.1f}일** 중심으로 CRM 타이밍을 맞추는 것을 권장합니다.",
+                        ],
+                        repeat_rate=repeat_rate,
+                        avg_interval_days=avg_interval_days,
+                    )
                 )
             else:
                 bullets.append(
-                    f"- 재방문 비율이 **{repeat_rate:.1f}%**로 높은 편입니다. 반복 방문 고객 전용 혜택 설계 여지가 큽니다."
+                    self._vary_sentence(
+                        [
+                            "- 재방문 비율이 **{repeat_rate:.1f}%**로 높은 편입니다. 반복 방문 고객 전용 혜택 설계 여지가 큽니다.",
+                            "- 재방문율이 **{repeat_rate:.1f}%**로 높아 단골 전용 혜택 실험 가치가 충분합니다.",
+                            "- 반복 방문 고객 비중이 높은 편(**{repeat_rate:.1f}%**)이라 멤버십/리워드 전략 효과를 기대할 수 있습니다.",
+                        ],
+                        repeat_rate=repeat_rate,
+                    )
                 )
         elif repeat_rate > 0:
             bullets.append(
-                f"- 재방문 비율은 **{repeat_rate:.1f}%**입니다. 재방문 전환을 높이려면 첫 방문 직후 7일 내 리마인드 메시지가 효과적일 가능성이 큽니다."
+                self._vary_sentence(
+                    [
+                        "- 재방문 비율은 **{repeat_rate:.1f}%**입니다. 재방문 전환을 높이려면 첫 방문 직후 7일 내 리마인드 메시지가 효과적일 가능성이 큽니다.",
+                        "- 현재 재방문율은 **{repeat_rate:.1f}%**입니다. 첫 방문 후 1주 이내 재접점 메시지로 전환을 끌어올릴 수 있습니다.",
+                        "- 재방문율 **{repeat_rate:.1f}%** 구간에서는 방문 7일 이내 쿠폰/알림 발송이 재방문 유도에 유리합니다.",
+                    ],
+                    repeat_rate=repeat_rate,
+                )
             )
         else:
             bullets.append(
-                "- 닉네임 기준 재방문 고객이 충분히 잡히지 않았습니다. 리뷰 작성 유도 캠페인으로 고객 식별 가능한 표본을 먼저 늘리는 것이 좋습니다."
+                self._vary_sentence(
+                    [
+                        "- 닉네임 기준 재방문 고객이 충분히 잡히지 않았습니다. 리뷰 작성 유도 캠페인으로 고객 식별 가능한 표본을 먼저 늘리는 것이 좋습니다.",
+                        "- 현재는 닉네임 기반 재방문 추정 표본이 부족합니다. 리뷰 참여 유도부터 강화하는 것이 우선입니다.",
+                        "- 고객 식별 가능한 리뷰 표본이 적어 재방문 분석 신뢰도가 낮습니다. 리뷰 수집 모수를 먼저 키우는 전략이 필요합니다.",
+                    ]
+                )
             )
 
         if hidden_examples:
             bullets.append(
-                "- 숨은 불만 문장을 별도로 모니터링하면 '평점은 높지만 재방문이 줄어드는 구간'을 조기에 포착할 수 있습니다."
+                self._vary_sentence(
+                    [
+                        "- 숨은 불만 문장을 별도로 모니터링하면 '평점은 높지만 재방문이 줄어드는 구간'을 조기에 포착할 수 있습니다.",
+                        "- 칭찬 속 불만 문장을 따로 추적하면 겉으로 드러나지 않는 이탈 신호를 빠르게 잡을 수 있습니다.",
+                        "- 숨은 불만 샘플을 주간 단위로 점검하면 평점 대비 매출 하락 구간을 조기 탐지하기 좋습니다.",
+                    ]
+                )
             )
         else:
-            bullets.append("- 현재 샘플에서는 긍정-부정 혼합 문장이 상대적으로 적습니다.")
+            bullets.append(
+                self._vary_sentence(
+                    [
+                        "- 현재 샘플에서는 긍정-부정 혼합 문장이 상대적으로 적습니다.",
+                        "- 이번 범위에서는 칭찬과 불만이 함께 나타난 문장이 많지 않았습니다.",
+                        "- 혼합 감정(칭찬+불만) 케이스 비중이 낮아 숨은 불만 신호는 약한 편입니다.",
+                    ]
+                )
+            )
 
         return bullets
 
@@ -739,6 +847,114 @@ LIMIT 10
             column: ReviewAnalysisService._to_korean_column(str(column)) for column in df.columns
         }
         return df.rename(columns=renamed)
+
+    def _mask_sensitive_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        if len(df) == 0:
+            return df
+
+        masked = df.copy()
+        for column in masked.columns:
+            normalized = str(column).strip().lower()
+            if self._is_identifier_column(normalized):
+                masked[column] = masked[column].map(self._mask_identifier)
+                continue
+            if self._is_free_text_column(normalized):
+                masked[column] = masked[column].map(self._mask_text_pii)
+        return masked
+
+    @staticmethod
+    def _is_identifier_column(column_name: str) -> bool:
+        tokens = (
+            "nickname",
+            "nick",
+            "user_name",
+            "username",
+            "user_id",
+            "customer_id",
+            "member_id",
+            "email",
+            "phone",
+            "tel",
+            "contact",
+            "연락처",
+            "전화",
+            "휴대폰",
+            "핸드폰",
+            "이메일",
+            "닉네임",
+            "아이디",
+        )
+        return any(token in column_name for token in tokens)
+
+    @staticmethod
+    def _is_free_text_column(column_name: str) -> bool:
+        tokens = ("review_content", "content", "text", "message", "메모", "내용", "리뷰")
+        return any(token in column_name for token in tokens)
+
+    @staticmethod
+    def _mask_identifier(value: object) -> str:
+        if pd.isna(value):
+            return ""
+        text = str(value).strip()
+        if text == "":
+            return ""
+
+        if "@" in text:
+            return ReviewAnalysisService._mask_text_pii(text)
+
+        if len(text) <= 1:
+            return "*"
+        if len(text) == 2:
+            return text[0] + "*"
+        return text[0] + ("*" * (len(text) - 2)) + text[-1]
+
+    @staticmethod
+    def _mask_text_pii(value: object) -> str:
+        if pd.isna(value):
+            return ""
+        text = str(value)
+        if text.strip() == "":
+            return ""
+
+        text = EMAIL_PATTERN.sub(
+            lambda match: f"{match.group(1)}***@{match.group(2)}",
+            text,
+        )
+        text = PHONE_PATTERN.sub(ReviewAnalysisService._mask_phone_number, text)
+        text = HANDLE_PATTERN.sub(
+            lambda match: f"@{match.group(1)[0]}***",
+            text,
+        )
+        text = LONG_DIGIT_PATTERN.sub(ReviewAnalysisService._mask_long_digits, text)
+        text = NAME_WITH_NIM_PATTERN.sub(
+            lambda match: f"{ReviewAnalysisService._mask_name_like(match.group(1))}님",
+            text,
+        )
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _mask_phone_number(match: re.Match) -> str:
+        digits = re.sub(r"\D", "", match.group(0))
+        if len(digits) < 9:
+            return "***"
+        prefix = digits[:3]
+        suffix = digits[-4:]
+        return f"{prefix}-****-{suffix}"
+
+    @staticmethod
+    def _mask_long_digits(match: re.Match) -> str:
+        digits = match.group(0)
+        if len(digits) <= 4:
+            return "*" * len(digits)
+        return digits[:2] + ("*" * (len(digits) - 4)) + digits[-2:]
+
+    @staticmethod
+    def _mask_name_like(name: str) -> str:
+        if len(name) <= 1:
+            return "*"
+        if len(name) == 2:
+            return name[0] + "*"
+        return name[0] + ("*" * (len(name) - 2)) + name[-1]
 
     @staticmethod
     def _to_korean_column(column_name: str) -> str:

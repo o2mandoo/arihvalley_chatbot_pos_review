@@ -24,5 +24,6 @@ uvicorn app.main:app --reload --port 8000
 
 - `OPENAI_API_KEY` (필수)
 - `OPENAI_MODEL` (기본: `gpt-5-mini`)
+- `OPENAI_TEMPERATURE` (기본: `0.35`, 높일수록 표현/SQL 생성 변동성 증가)
 
 `OPENAI_API_KEY`가 없으면 `.env` -> `~/.zshrc` 순서로 fallback 로드합니다.
