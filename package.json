@@ -1,0 +1,26 @@
+{
+  "name": "fms-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FMS sales data ingestion and analytics workspace",
+  "scripts": {
+    "sales:pipeline": "node scripts/pipeline/run-pipeline.js",
+    "sales:decrypt": "node scripts/pipeline/1-decrypt-excel.js",
+    "sales:transform": "node scripts/pipeline/2-excel-to-json.js",
+    "sales:import": "node scripts/pipeline/3-import-to-db.js",
+    "sales:seed-staff": "node scripts/pipeline/4-seed-staff-data.js",
+    "sales:analyze-duplicates": "node scripts/analyze-duplicates.js",
+    "prisma:generate": "prisma generate --schema=prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate deploy --schema=prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^6.0.0",
+    "@prisma/client": "^6.0.0",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "prisma": "^6.0.0"
+  }
+}

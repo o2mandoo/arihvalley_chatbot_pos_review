@@ -1,0 +1,25 @@
+services:
+  review-backend:
+    build:
+      context: .
+      dockerfile: review_chat_backend/Dockerfile
+    container_name: review-chat-backend
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  review-frontend:
+    build:
+      context: .
+      dockerfile: review_chat_frontend/Dockerfile
+    container_name: review-chat-frontend
+    depends_on:
+      - review-backend
+    environment:
+      REVIEW_BACKEND_URL: http://review-backend:8000
+    ports:
+      - "5173:3000"
+    restart: unless-stopped

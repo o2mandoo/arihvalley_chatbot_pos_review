@@ -1,0 +1,252 @@
+[
+  {
+    "question": "오늘 전체 지점 총 매출 합계 얼마야?",
+    "sql": "SELECT SUM(\"실판매금액\") as total_sales FROM sales_records WHERE \"주문일자\"::date = CURRENT_DATE",
+    "category": "매출_합계"
+  },
+  {
+    "question": "어제 강남점 총 매출액은?",
+    "sql": "SELECT SUM(\"실판매금액\") as total_sales FROM sales_records WHERE \"지점명\" = '강남점' AND \"주문일자\"::date = (CURRENT_DATE - INTERVAL '1 day')::date",
+    "category": "매출_합계"
+  },
+  {
+    "question": "10월 19일에 전체 지점 총 주문 건수는 몇 건이야?",
+    "sql": "SELECT COUNT(DISTINCT (\"주문번호\", \"주문일자\")) as order_count FROM sales_records WHERE \"주문일자\"::date = '2024-10-19'::date",
+    "category": "주문_건수"
+  },
+  {
+    "question": "전체 지점의 오늘 평균 주문 단가(AOV)는 얼마야?",
+    "sql": "SELECT AVG(order_total) as aov FROM (SELECT \"주문번호\", \"주문일자\", SUM(\"실판매금액\") as order_total FROM sales_records WHERE \"주문일자\"::date = CURRENT_DATE GROUP BY \"주문번호\", \"주문일자\") t",
+    "category": "평균_단가"
+  },
+  {
+    "question": "건대점에서 어제 가장 큰 금액의 단일 주문은 얼마였어?",
+    "sql": "SELECT MAX(order_total) as max_order FROM (SELECT \"주문번호\", \"주문일자\", SUM(\"실판매금액\") as order_total FROM sales_records WHERE \"지점명\" = '건대점' AND \"주문일자\"::date = (CURRENT_DATE - INTERVAL '1 day')::date GROUP BY \"주문번호\", \"주문일자\") t",
+    "category": "최대값"
+  },
+  {
+    "question": "'새로' 소주 오늘 전체 지점에서 총 몇 병 팔렸어?",
+    "sql": "SELECT SUM(\"수량\") as total_quantity FROM sales_records WHERE \"메뉴명\" LIKE '%새로%' AND \"주문일자\"::date = CURRENT_DATE",
+    "category": "판매량"
+  },
+  {
+    "question": "지점별로 '원조닭반골' 가격 설정이 어떻게 달라?",
+    "sql": "SELECT \"지점명\", \"메뉴명\", \"단가\" FROM sales_records WHERE \"메뉴명\" LIKE '%원조닭반골%' GROUP BY \"지점명\", \"메뉴명\", \"단가\" ORDER BY \"지점명\"",
+    "category": "가격_비교"
+  },
+  {
+    "question": "오늘 '테이블오더'로 들어온 주문은 전체 지점 합쳐서 총 몇 건이야?",
+    "sql": "SELECT COUNT(DISTINCT (\"주문번호\", \"주문일자\")) as order_count FROM sales_records WHERE \"주문채널\" = '테이블오더' AND \"주문일자\"::date = CURRENT_DATE",
+    "category": "주문_건수"
+  },
+  {
+    "question": "왕십리 한양대점에서 오늘 '포스'로 주문한 건수는?",
+    "sql": "SELECT COUNT(DISTINCT (\"주문번호\", \"주문일자\")) as order_count FROM sales_records WHERE \"지점명\" LIKE '%왕십리%한양대%' AND \"주문채널\" = '포스' AND \"주문일자\"::date = CURRENT_DATE",
+    "category": "주문_건수"
+  },
+  {
+    "question": "어제 전체 지점에서 취소된 주문은 총 몇 건이야?",
+    "sql": "SELECT COUNT(DISTINCT (\"주문번호\", \"주문일자\")) as cancelled_count FROM sales_records WHERE \"주문상태\" = '취소' AND \"주문일자\"::date = (CURRENT_DATE - INTERVAL '1 day')::date",
+    "category": "취소_건수"
+  },
+  {
+    "question": "오늘 전체 지점에서 가장 많이 팔린 메뉴 Top 5 알려줘. (판매 건수 기준)",
+    "sql": "SELECT \"메뉴명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"주문일자\"::date = CURRENT_DATE GROUP BY \"메뉴명\" ORDER BY total_sold DESC LIMIT 5",
+    "category": "순위_메뉴"
+  },
+  {
+    "question": "오늘 매출액 기준 Top 3 메뉴는 뭐야? (전체 지점 합산)",
+    "sql": "SELECT \"메뉴명\", SUM(\"실판매금액\") as total_sales FROM sales_records WHERE \"주문일자\"::date = CURRENT_DATE GROUP BY \"메뉴명\" ORDER BY total_sales DESC LIMIT 3",
+    "category": "순위_메뉴"
+  },
+  {
+    "question": "오늘 가장 매출이 높은 지점은 어디야?",
+    "sql": "SELECT \"지점명\", SUM(\"실판매금액\") as total_sales FROM sales_records WHERE \"주문일자\"::date = CURRENT_DATE GROUP BY \"지점명\" ORDER BY total_sales DESC LIMIT 1",
+    "category": "순위_지점"
+  },
+  {
+    "question": "'주류' 카테고리에서 전체 지점 합산 제일 잘 나간 술 3가지는?",
+    "sql": "SELECT \"메뉴명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"카테고리\" = '주류' GROUP BY \"메뉴명\" ORDER BY total_sold DESC LIMIT 3",
+    "category": "순위_메뉴"
+  },
+  {
+    "question": "지점별로 '대표안주' 중에서 제일 많이 팔린 메뉴 각각 알려줘.",
+    "sql": "WITH menu_sales AS (SELECT \"지점명\", \"메뉴명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"카테고리\" = '대표안주' GROUP BY \"지점명\", \"메뉴명\"), max_sales AS (SELECT \"지점명\", MAX(total_sold) as max_sold FROM menu_sales GROUP BY \"지점명\") SELECT m.\"지점명\", m.\"메뉴명\", m.total_sold FROM menu_sales m JOIN max_sales ms ON m.\"지점명\" = ms.\"지점명\" AND m.total_sold = ms.max_sold ORDER BY m.\"지점명\"",
+    "category": "순위_메뉴"
+  },
+  {
+    "question": "대학가 상권 지점들의 '하이볼 및 음료' 카테고리 판매 순위 보여줘.",
+    "sql": "SELECT \"지점명\", \"메뉴명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"지역유형\" = '대학가' AND \"카테고리\" IN ('하이볼', '음료') GROUP BY \"지점명\", \"메뉴명\" ORDER BY \"지점명\", total_sold DESC",
+    "category": "순위_메뉴"
+  },
+  {
+    "question": "전체 지점 결제수단별 매출액 비중을 보여줘.",
+    "sql": "SELECT \"결제수단\", SUM(\"실판매금액\") as total_sales, ROUND(SUM(\"실판매금액\") * 100.0 / (SELECT SUM(\"실판매금액\") FROM sales_records), 2) as percentage FROM sales_records GROUP BY \"결제수단\" ORDER BY total_sales DESC",
+    "category": "비율_결제"
+  },
+  {
+    "question": "강남점 손님들이 어제 가장 많이 사용한 결제수단은 뭐야?",
+    "sql": "SELECT \"결제수단\", COUNT(*) as usage_count FROM sales_records WHERE \"지점명\" = '강남점' AND \"주문일자\"::date = (CURRENT_DATE - INTERVAL '1 day')::date GROUP BY \"결제수단\" ORDER BY usage_count DESC LIMIT 1",
+    "category": "결제수단"
+  },
+  {
+    "question": "'테이블오더' 매출 비중이 가장 높은 지점 Top 3는 어디야?",
+    "sql": "SELECT \"지점명\", ROUND(SUM(CASE WHEN \"주문채널\" = '테이블오더' THEN \"실판매금액\" ELSE 0 END) * 100.0 / SUM(\"실판매금액\"), 2) as table_order_ratio FROM sales_records GROUP BY \"지점명\" ORDER BY table_order_ratio DESC LIMIT 3",
+    "category": "비율_채널"
+  },
+  {
+    "question": "전체 지점에서 오늘 가장 결제금액이 컸던 단일 주문은 얼마였고, 어느 지점이야?",
+    "sql": "WITH order_totals AS (SELECT \"지점명\", \"주문번호\", \"주문일자\", SUM(\"실판매금액\") as order_total FROM sales_records WHERE \"주문일자\"::date = CURRENT_DATE GROUP BY \"지점명\", \"주문번호\", \"주문일자\") SELECT \"지점명\", order_total as amount, \"주문번호\" FROM order_totals ORDER BY order_total DESC LIMIT 1",
+    "category": "최대값"
+  },
+  {
+    "question": "전체 지점 합산 어제 시간대별 매출 추이 보여줘.",
+    "sql": "SELECT EXTRACT(HOUR FROM \"주문시간\"::time)::int as hour, SUM(\"실판매금액\") as hourly_sales FROM sales_records WHERE \"주문일자\"::date = (CURRENT_DATE - INTERVAL '1 day')::date GROUP BY hour ORDER BY hour",
+    "category": "시간대_분석"
+  },
+  {
+    "question": "건대점의 지난주 동요일 대비 오늘 매출 비교해 줘.",
+    "sql": "SELECT '오늘' as period, SUM(\"실판매금액\") as sales FROM sales_records WHERE \"지점명\" = '건대점' AND \"주문일자\"::date = CURRENT_DATE UNION ALL SELECT '지난주 동요일' as period, SUM(\"실판매금액\") as sales FROM sales_records WHERE \"지점명\" = '건대점' AND \"주문일자\"::date = (CURRENT_DATE - INTERVAL '7 days')::date",
+    "category": "기간_비교"
+  },
+  {
+    "question": "전체 지점에서 오늘 가장 바빴던 시간대(Peak Time)는 언제야?",
+    "sql": "SELECT EXTRACT(HOUR FROM \"주문시간\"::time)::int as hour, COUNT(*) as order_count FROM sales_records WHERE \"주문일자\"::date = CURRENT_DATE GROUP BY hour ORDER BY order_count DESC LIMIT 1",
+    "category": "시간대_분석"
+  },
+  {
+    "question": "종각점 저녁 7시에서 10시 사이 매출은 해당 지점 전체 매출의 몇 프로야?",
+    "sql": "SELECT ROUND(SUM(CASE WHEN EXTRACT(HOUR FROM \"주문시간\"::time) BETWEEN 19 AND 22 THEN \"실판매금액\" ELSE 0 END) * 100.0 / SUM(\"실판매금액\"), 2) as evening_ratio FROM sales_records WHERE \"지점명\" = '종각점' AND \"주문일자\"::date = CURRENT_DATE",
+    "category": "비율_시간"
+  },
+  {
+    "question": "전체 지점에서 '새로'랑 '참이슬' 중에 오늘 뭐가 더 많이 팔렸어?",
+    "sql": "SELECT CASE WHEN \"메뉴명\" LIKE '%새로%' THEN '새로' WHEN \"메뉴명\" LIKE '%참이슬%' THEN '참이슬' END as product, SUM(\"수량\") as total_sold FROM sales_records WHERE (\"메뉴명\" LIKE '%새로%' OR \"메뉴명\" LIKE '%참이슬%') AND \"주문일자\"::date = CURRENT_DATE GROUP BY product ORDER BY total_sold DESC",
+    "category": "비교_메뉴"
+  },
+  {
+    "question": "지점별로 '닭껍질튀김' 판매량 비교해줘.",
+    "sql": "SELECT \"지점명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"메뉴명\" LIKE '%닭껍질튀김%' GROUP BY \"지점명\" ORDER BY total_sold DESC",
+    "category": "비교_지점"
+  },
+  {
+    "question": "전체 지점에서 '토스머니'로 결제된 총 금액은 얼마야?",
+    "sql": "SELECT SUM(\"실판매금액\") as total_amount FROM sales_records WHERE \"결제수단\" = '토스머니'",
+    "category": "매출_합계"
+  },
+  {
+    "question": "'신한카드' 매출 비중이 가장 높은 지점은 어디야?",
+    "sql": "SELECT \"지점명\", ROUND(SUM(CASE WHEN \"결제수단\" = '신한카드' THEN \"실판매금액\" ELSE 0 END) * 100.0 / SUM(\"실판매금액\"), 2) as shinhan_ratio FROM sales_records GROUP BY \"지점명\" ORDER BY shinhan_ratio DESC LIMIT 1",
+    "category": "비율_결제"
+  },
+  {
+    "question": "오늘 전체 지점에서 할인이 적용된 주문은 총 몇 건이고, 총 할인액은 얼마야?",
+    "sql": "SELECT COUNT(DISTINCT (\"주문번호\", \"주문일자\")) as discount_orders, SUM(\"할인금액\") as total_discount FROM sales_records WHERE \"할인금액\" > 0 AND \"주문일자\"::date = CURRENT_DATE",
+    "category": "할인_분석"
+  },
+  {
+    "question": "지점별 총 할인 금액 비교해줘.",
+    "sql": "SELECT \"지점명\", SUM(\"할인금액\") as total_discount FROM sales_records GROUP BY \"지점명\" ORDER BY total_discount DESC",
+    "category": "할인_분석"
+  },
+  {
+    "question": "'테이블오더'를 사용하는 지점들에서 가장 많이 시키는 메뉴 Top 3는 뭐야?",
+    "sql": "SELECT \"메뉴명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"주문채널\" = '테이블오더' GROUP BY \"메뉴명\" ORDER BY total_sold DESC LIMIT 3",
+    "category": "순위_메뉴"
+  },
+  {
+    "question": "'포스' 주문 비중이 80% 이상인 지점들에서 가장 인기 있는 메뉴는?",
+    "sql": "SELECT s.\"메뉴명\", SUM(s.\"수량\") as total_sold FROM sales_records s WHERE s.\"지점명\" IN (SELECT \"지점명\" FROM sales_records GROUP BY \"지점명\" HAVING SUM(CASE WHEN \"주문채널\" = '포스' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) >= 80) GROUP BY s.\"메뉴명\" ORDER BY total_sold DESC LIMIT 1",
+    "category": "조건_분석"
+  },
+  {
+    "question": "대학가 상권 지점들의 평균 객단가(AOV)는 얼마야?",
+    "sql": "SELECT AVG(order_total) as aov FROM (SELECT \"지점명\", \"주문번호\", \"주문일자\", SUM(\"실판매금액\") as order_total FROM sales_records WHERE \"지역유형\" = '대학가' GROUP BY \"지점명\", \"주문번호\", \"주문일자\") t",
+    "category": "평균_단가"
+  },
+  {
+    "question": "오피스 상권 지점들의 평균 객단가는?",
+    "sql": "SELECT AVG(order_total) as aov FROM (SELECT \"지점명\", \"주문번호\", \"주문일자\", SUM(\"실판매금액\") as order_total FROM sales_records WHERE \"지역유형\" = '오피스' GROUP BY \"지점명\", \"주문번호\", \"주문일자\") t",
+    "category": "평균_단가"
+  },
+  {
+    "question": "강남점에서 오늘 '원조닭반골'을 주문한 고객들은 주로 어떤 결제수단을 사용했어?",
+    "sql": "SELECT \"결제수단\", COUNT(*) as usage_count FROM sales_records WHERE \"지점명\" = '강남점' AND \"메뉴명\" LIKE '%원조닭반골%' AND \"주문일자\"::date = CURRENT_DATE GROUP BY \"결제수단\" ORDER BY usage_count DESC",
+    "category": "결제수단"
+  },
+  {
+    "question": "'새로' 소주 판매량이 가장 높은 지점 Top 3는 어디야?",
+    "sql": "SELECT \"지점명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"메뉴명\" LIKE '%새로%' GROUP BY \"지점명\" ORDER BY total_sold DESC LIMIT 3",
+    "category": "순위_지점"
+  },
+  {
+    "question": "'전, 튀김안주' 카테고리 매출 비중이 높은 지점들은 어떤 술을 주로 팔고 있어?",
+    "sql": "WITH top_branches AS (SELECT \"지점명\", SUM(CASE WHEN \"카테고리\" IN ('전', '튀김안주') THEN \"실판매금액\" ELSE 0 END) as anju_sales FROM sales_records GROUP BY \"지점명\" ORDER BY anju_sales DESC LIMIT 5) SELECT s.\"지점명\", s.\"메뉴명\", SUM(s.\"수량\") as total_sold FROM sales_records s JOIN top_branches tb ON s.\"지점명\" = tb.\"지점명\" WHERE s.\"카테고리\" = '주류' GROUP BY s.\"지점명\", s.\"메뉴명\" ORDER BY s.\"지점명\", total_sold DESC",
+    "category": "연관_분석"
+  },
+  {
+    "question": "'오미자하이볼(4잔 분량)' 옵션 판매량이 가장 많은 지점은?",
+    "sql": "SELECT \"지점명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"메뉴명\" LIKE '%오미자하이볼%4잔%' GROUP BY \"지점명\" ORDER BY total_sold DESC LIMIT 1",
+    "category": "순위_지점"
+  },
+  {
+    "question": "전체 지점에서 실제 할인율(할인금액 / 원가)이 가장 높았던 메뉴는 뭐야?",
+    "sql": "SELECT \"메뉴명\", ROUND(AVG(\"할인금액\" * 100.0 / (\"실판매금액\" + \"할인금액\")), 2) as discount_rate FROM sales_records WHERE \"할인금액\" > 0 GROUP BY \"메뉴명\" ORDER BY discount_rate DESC LIMIT 1",
+    "category": "할인_분석"
+  },
+  {
+    "question": "'사이드추가' 메뉴 판매량이 가장 많은 지점과 가장 적은 지점은 어디야?",
+    "sql": "SELECT '최다' as type, \"지점명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"메뉴명\" LIKE '%사이드추가%' GROUP BY \"지점명\" ORDER BY total_sold DESC LIMIT 1 UNION ALL SELECT '최소' as type, \"지점명\", SUM(\"수량\") as total_sold FROM sales_records WHERE \"메뉴명\" LIKE '%사이드추가%' GROUP BY \"지점명\" ORDER BY total_sold ASC LIMIT 1",
+    "category": "비교_지점"
+  },
+  {
+    "question": "'테이블오더' 도입 지점과 미도입 지점 간 평균 객단가 차이가 통계적으로 유의미해?",
+    "sql": "WITH branch_flags AS (SELECT \"지점명\", MAX(CASE WHEN \"주문채널\" = '테이블오더' THEN 1 ELSE 0 END) as has_table_order FROM sales_records GROUP BY \"지점명\"), order_totals AS (SELECT s.\"지점명\", s.\"주문번호\", s.\"주문일자\", SUM(s.\"실판매금액\") as order_total FROM sales_records s GROUP BY s.\"지점명\", s.\"주문번호\", s.\"주문일자\") SELECT CASE WHEN b.has_table_order = 1 THEN '도입' ELSE '미도입' END as status, AVG(o.order_total) as avg_amount, COUNT(*) as sample_size, STDDEV_SAMP(o.order_total) as std_dev FROM order_totals o JOIN branch_flags b ON o.\"지점명\" = b.\"지점명\" GROUP BY status",
+    "category": "통계_분석"
+  },
+  {
+    "question": "전체 지점 데이터를 봤을 때, '원조닭반골'과 가장 많이 함께 팔리는 주류 Top 3는 뭐야?",
+    "sql": "SELECT s2.\"메뉴명\", COUNT(*) as pair_count FROM sales_records s1 JOIN sales_records s2 ON s1.\"주문번호\" = s2.\"주문번호\" AND s1.\"주문일자\" = s2.\"주문일자\" WHERE s1.\"메뉴명\" LIKE '%원조닭반골%' AND s2.\"카테고리\" = '주류' AND s1.\"메뉴명\" <> s2.\"메뉴명\" GROUP BY s2.\"메뉴명\" ORDER BY pair_count DESC LIMIT 3",
+    "category": "연관_분석"
+  },
+  {
+    "question": "상권별 (대학가, 오피스, 유흥가 등)로 가장 인기 있는 '안주 + 주류' 조합 알려줘.",
+    "sql": "SELECT s1.\"지역유형\" as area_type, s1.\"메뉴명\" as anju_menu, s2.\"메뉴명\" as drink_menu, COUNT(*) as pair_count FROM sales_records s1 JOIN sales_records s2 ON s1.\"주문번호\" = s2.\"주문번호\" AND s1.\"주문일자\" = s2.\"주문일자\" WHERE s1.\"카테고리\" IN ('대표안주', '전', '튀김안주') AND s2.\"카테고리\" = '주류' GROUP BY area_type, anju_menu, drink_menu ORDER BY area_type, pair_count DESC",
+    "category": "연관_분석"
+  },
+  {
+    "question": "매출 상위 10% 지점과 하위 10% 지점 간의 메뉴 판매 구성(카테고리별 비중) 차이를 비교 분석해줘.",
+    "sql": "WITH branch_sales AS (SELECT \"지점명\", SUM(\"실판매금액\") as branch_total FROM sales_records GROUP BY \"지점명\"), branch_rank AS (SELECT \"지점명\", NTILE(100) OVER (ORDER BY branch_total DESC) as sales_rank FROM branch_sales), categorized AS (SELECT s.\"카테고리\", r.sales_rank, s.\"실판매금액\" FROM sales_records s JOIN branch_rank r ON s.\"지점명\" = r.\"지점명\"), totals AS (SELECT SUM(CASE WHEN sales_rank <= 10 THEN \"실판매금액\" ELSE 0 END) as top_total, SUM(CASE WHEN sales_rank >= 90 THEN \"실판매금액\" ELSE 0 END) as bottom_total FROM categorized) SELECT c.\"카테고리\", ROUND(SUM(CASE WHEN c.sales_rank <= 10 THEN c.\"실판매금액\" ELSE 0 END) * 100.0 / NULLIF(t.top_total, 0), 2) as top_10_ratio, ROUND(SUM(CASE WHEN c.sales_rank >= 90 THEN c.\"실판매금액\" ELSE 0 END) * 100.0 / NULLIF(t.bottom_total, 0), 2) as bottom_10_ratio FROM categorized c CROSS JOIN totals t GROUP BY c.\"카테고리\", t.top_total, t.bottom_total ORDER BY c.\"카테고리\"",
+    "category": "비교_분석"
+  },
+  {
+    "question": "신메뉴 ('바질향채닭전골' 같은) 출시 후 지점별 판매량 추이를 비교해서 보여줘.",
+    "sql": "SELECT \"지점명\", \"주문일자\"::date as date, SUM(\"수량\") as daily_sales FROM sales_records WHERE \"메뉴명\" LIKE '%바질향채닭전골%' GROUP BY \"지점명\", \"주문일자\"::date ORDER BY \"지점명\", date",
+    "category": "추이_분석"
+  },
+  {
+    "question": "특정 할인 프로모션(예: '2인 세트 할인')을 진행한 지점과 안 한 지점 간의 해당 메뉴 판매량 및 전체 매출 증감률 차이는?",
+    "sql": "SELECT CASE WHEN \"할인금액\" > 0 THEN '프로모션 진행' ELSE '미진행' END as promo_status, AVG(\"수량\") as avg_quantity, AVG(\"실판매금액\") as avg_sales FROM sales_records WHERE \"메뉴명\" LIKE '%2인 세트%' GROUP BY promo_status",
+    "category": "프로모션_분석"
+  },
+  {
+    "question": "지점별 주문 채널('포스' vs '테이블오더') 비중과 평균 객단가의 상관관계를 분석해줘.",
+    "sql": "WITH order_totals AS (SELECT \"지점명\", \"주문번호\", \"주문일자\", SUM(\"실판매금액\") as order_total, MAX(\"주문채널\") as order_channel FROM sales_records GROUP BY \"지점명\", \"주문번호\", \"주문일자\"), branch_stats AS (SELECT \"지점명\", ROUND(SUM(CASE WHEN order_channel = '테이블오더' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as table_order_ratio, AVG(order_total) as avg_amount FROM order_totals GROUP BY \"지점명\") SELECT * FROM branch_stats ORDER BY table_order_ratio",
+    "category": "상관_분석"
+  },
+  {
+    "question": "'사이드추가' 메뉴 주문율이 높은 지점들의 공통적인 특징은 뭐야?",
+    "sql": "WITH branch_ratio AS (SELECT \"지점명\", SUM(CASE WHEN \"메뉴명\" LIKE '%사이드추가%' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as side_ratio FROM sales_records GROUP BY \"지점명\" ORDER BY side_ratio DESC LIMIT 10) SELECT s.\"지점명\", s.\"지역유형\", AVG(s.\"실판매금액\") as avg_amount, COUNT(DISTINCT s.\"메뉴명\") as menu_variety FROM sales_records s JOIN branch_ratio br ON s.\"지점명\" = br.\"지점명\" GROUP BY s.\"지점명\", s.\"지역유형\" ORDER BY s.\"지점명\"",
+    "category": "특성_분석"
+  },
+  {
+    "question": "지점별로 옵션 메뉴(예: '4잔 분량')가 전체 매출에서 차지하는 비중은 어떻게 달라?",
+    "sql": "SELECT \"지점명\", ROUND(SUM(CASE WHEN \"메뉴명\" LIKE '%분량%' OR \"메뉴명\" LIKE '%옵션%' THEN \"실판매금액\" ELSE 0 END) * 100.0 / SUM(\"실판매금액\"), 2) as option_ratio FROM sales_records GROUP BY \"지점명\" ORDER BY option_ratio DESC",
+    "category": "비율_분석"
+  },
+  {
+    "question": "저녁 9시 이전 고객과 이후 고객들이 선호하는 메뉴가 상권 유형별로 어떻게 다른지 비교 분석해줘.",
+    "sql": "SELECT \"지역유형\", CASE WHEN EXTRACT(HOUR FROM \"주문시간\"::time) < 21 THEN '9시 이전' ELSE '9시 이후' END as time_slot, \"메뉴명\", SUM(\"수량\") as total_sold FROM sales_records GROUP BY \"지역유형\", time_slot, \"메뉴명\" ORDER BY \"지역유형\", time_slot, total_sold DESC",
+    "category": "시간대_분석"
+  }
+]

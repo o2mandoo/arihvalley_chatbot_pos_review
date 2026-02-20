@@ -1,0 +1,138 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 지점 테이블
+model Branch {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  areaType  String   @map("area_type") // 대학가, 오피스, 주거, 유흥가
+  address   String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  orders Order[]
+  staff  Staff[]
+
+  @@map("branches")
+}
+
+// 카테고리 테이블
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  menus Menu[]
+
+  @@map("categories")
+}
+
+// 메뉴 테이블
+model Menu {
+  id         Int      @id @default(autoincrement())
+  name       String   @unique
+  categoryId Int      @map("category_id")
+  basePrice  Int      @default(0) @map("base_price") // 기본 가격
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  category   Category    @relation(fields: [categoryId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([categoryId])
+  @@map("menus")
+}
+
+// 주문 테이블
+model Order {
+  id           Int      @id @default(autoincrement())
+  orderNumber  String   @map("order_number") // 원본 주문번호
+  branchId     Int      @map("branch_id")
+  orderDate    DateTime @map("order_date")
+  orderChannel String   @map("order_channel") // 포스, 테이블오더
+  orderStatus  String   @map("order_status") // 완료, 취소
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  branch Branch      @relation(fields: [branchId], references: [id])
+  items  OrderItem[]
+
+  @@unique([branchId, orderNumber, orderDate]) // 같은 지점, 같은 날, 같은 주문번호는 유일
+  @@index([orderDate])
+  @@index([branchId])
+  @@index([orderStatus])
+  @@map("orders")
+}
+
+// 주문 상세 테이블
+model OrderItem {
+  id              Int      @id @default(autoincrement())
+  orderId         Int      @map("order_id")
+  menuId          Int      @map("menu_id")
+  quantity        Int
+  unitPrice       Int      @map("unit_price") // 단가
+  optionName      String?  @map("option_name") // 옵션명
+  optionPrice     Int      @default(0) @map("option_price") // 옵션 가격
+  productDiscount Int      @default(0) @map("product_discount") // 상품 할인
+  orderDiscount   Int      @default(0) @map("order_discount") // 주문 할인
+  totalAmount     Int      @map("total_amount") // 실판매금액
+  taxType         String   @default("과세") @map("tax_type") // 과세여부
+  vatAmount       Int      @default(0) @map("vat_amount") // 부가세
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menu  Menu  @relation(fields: [menuId], references: [id])
+
+  @@index([orderId])
+  @@index([menuId])
+  @@map("order_items")
+}
+
+// 직원 테이블
+model Staff {
+  id             Int      @id @default(autoincrement())
+  name           String
+  role           String   // 매니저, 주방, 홀서빙 등
+  color          String   @default("#3B82F6") // 캘린더 표시 색상
+  phone          String   // 전화번호 (필수)
+  hourlyWage     Int?     @map("hourly_wage") // 시급
+  fixedDays      String?  @map("fixed_days") // 고정 근무 요일 (JSON: ["월","화"])
+  fixedStartTime String?  @map("fixed_start_time") // 고정 근무 시작 시간 (예: "11:00") - 기본값
+  fixedEndTime   String?  @map("fixed_end_time") // 고정 근무 종료 시간 (예: "20:00") - 기본값
+  fixedScheduleByDay String? @map("fixed_schedule_by_day") // 요일별 근무 시간 (JSON: {"월":{"start":"11:00","end":"20:00"}})
+  isActive       Boolean  @default(true) @map("is_active")
+  branchId       Int      @map("branch_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  branch    Branch     @relation(fields: [branchId], references: [id])
+  schedules Schedule[]
+
+  @@index([branchId])
+  @@map("staff")
+}
+
+// 스케줄 테이블
+model Schedule {
+  id        Int      @id @default(autoincrement())
+  staffId   Int      @map("staff_id")
+  startTime DateTime @map("start_time")
+  endTime   DateTime @map("end_time")
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId])
+  @@index([startTime])
+  @@map("schedules")
+}

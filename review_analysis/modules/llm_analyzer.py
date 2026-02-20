@@ -4,6 +4,7 @@ LLM 기반 리뷰 분석 모듈
 import os
 import json
 import time
+import re
 import pandas as pd
 from typing import Dict, Optional, List
 from openai import OpenAI
@@ -14,6 +15,42 @@ from tqdm.auto import tqdm
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def load_env_from_shell_rc(var_name: str) -> Optional[str]:
+    """zsh 설정 파일에서 환경변수를 찾아 현재 프로세스 환경변수로 로드"""
+    candidates = [
+        os.path.expanduser("~/.zshrc"),
+        os.path.expanduser("~/.zshenv"),
+        os.path.expanduser("~/.zprofile"),
+    ]
+
+    pattern = re.compile(rf"^(export\s+)?{re.escape(var_name)}\s*=\s*(.+)$")
+
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    match = pattern.match(stripped)
+                    if not match:
+                        continue
+                    value = match.group(2).strip()
+                    if (value.startswith("'") and value.endswith("'")) or (
+                        value.startswith('"') and value.endswith('"')
+                    ):
+                        value = value[1:-1]
+                    if value:
+                        os.environ[var_name] = value
+                        return value
+        except OSError:
+            continue
+
+    return None
 
 # 분석 프롬프트
 ANALYSIS_PROMPT = """
@@ -72,7 +109,7 @@ ANALYSIS_PROMPT = """
 class LLMReviewAnalyzer:
     """LLM 기반 리뷰 분석 클래스"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         """
         Args:
             api_key: OpenAI API 키 (None이면 환경변수에서 로드)
@@ -80,11 +117,19 @@ class LLMReviewAnalyzer:
         """
         load_dotenv()
 
+        if not os.getenv("OPENAI_API_KEY"):
+            load_env_from_shell_rc("OPENAI_API_KEY")
+        if not os.getenv("OPENAI_MODEL"):
+            load_env_from_shell_rc("OPENAI_MODEL")
+
         self.api_key = api_key or os.getenv('OPENAI_API_KEY')
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다!")
+            raise ValueError(
+                "OPENAI_API_KEY가 설정되지 않았습니다! "
+                "(.env 또는 ~/.zshrc에 설정하세요)"
+            )
 
-        self.model = model or os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+        self.model = model or os.getenv('OPENAI_MODEL', 'gpt-5-mini')
         self.client = OpenAI(api_key=self.api_key)
 
         # 병렬 처리용 락

@@ -1,237 +1,141 @@
 #!/usr/bin/env python3
-"""
-전체 리뷰 분석 파이프라인 실행 스크립트
-크롤링 → 데이터 관리 → LLM 분석 → 리포트 생성
-"""
+"""리뷰 파이프라인 실행 스크립트 (크롤링 중심)."""
+
+import argparse
+import logging
 import sys
 from pathlib import Path
-import logging
-import argparse
+
+import pandas as pd
 
 # 모듈 경로 추가
 sys.path.append(str(Path(__file__).parent))
 
-from modules import NaverReviewCrawler, ReviewDataManager, LLMReviewAnalyzer, ReportGenerator
-from config.config import STORES, CRAWLING_CONFIG, get_review_filepath, get_analysis_filepath
+from config.config import CRAWLING_CONFIG, STORES, get_analysis_filepath, get_review_filepath
+from modules import LLMReviewAnalyzer, NaverReviewCrawler, ReportGenerator, ReviewDataManager
 
-# 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
-def run_full_pipeline(
+def run_store_pipeline(
     store_key: str,
     skip_crawling: bool = False,
-    skip_analysis: bool = False,
-    max_workers: int = 10
-):
-    """
-    전체 파이프라인 실행
-
-    Args:
-        store_key: 매장 키 (예: "강남점")
-        skip_crawling: 크롤링 건너뛰기
-        skip_analysis: 분석 건너뛰기
-        max_workers: LLM 분석 병렬 작업 수
-    """
+    with_analysis: bool = False,
+    max_workers: int = 10,
+    wait_time: int = CRAWLING_CONFIG["wait_time"],
+    click_wait: int = CRAWLING_CONFIG["click_wait"],
+    headless: bool = CRAWLING_CONFIG["headless"],
+) -> None:
     if store_key not in STORES:
-        logger.error(f"매장 정보를 찾을 수 없습니다: {store_key}")
-        logger.info(f"사용 가능한 매장: {list(STORES.keys())}")
-        return
+        raise ValueError(f"매장 정보를 찾을 수 없습니다: {store_key}")
 
     store_info = STORES[store_key]
     store_name = store_info["store_name"]
-
-    logger.info("=" * 100)
-    logger.info("🚀 리뷰 분석 파이프라인 시작")
-    logger.info("=" * 100)
-    logger.info(f"매장: {store_key} ({store_name})")
-    logger.info(f"크롤링: {'건너뛰기' if skip_crawling else '실행'}")
-    logger.info(f"분석: {'건너뛰기' if skip_analysis else '실행'}")
-    logger.info("=" * 100)
-
-    # 파일 경로
     review_filepath = get_review_filepath(store_name)
     analysis_filepath = get_analysis_filepath(store_name)
 
-    # ========================================
-    # 1단계: 크롤링
-    # ========================================
+    logger.info("=" * 80)
+    logger.info("매장: %s (%s)", store_key, store_name)
+    logger.info("크롤링: %s", "건너뜀" if skip_crawling else "실행")
+    logger.info("LLM 분석: %s", "실행" if with_analysis else "건너뜀")
+    logger.info("=" * 80)
+
     if not skip_crawling:
-        logger.info("\n" + "=" * 100)
-        logger.info("📡 1단계: 리뷰 크롤링")
-        logger.info("=" * 100)
+        logger.info("[1/2] 리뷰 크롤링 + 증분 병합")
+        crawler = NaverReviewCrawler(headless=headless)
+        new_reviews = crawler.crawl_reviews(
+            url=store_info["url"],
+            wait_time=wait_time,
+            click_wait=click_wait,
+        )
+        logger.info("수집 리뷰: %d건", len(new_reviews))
 
-        url = store_info["url"]
-        crawler = NaverReviewCrawler(headless=CRAWLING_CONFIG["headless"])
+        manager = ReviewDataManager(str(review_filepath))
+        manager.load_data()
+        before = manager.get_statistics()["total_reviews"]
+        added_count = manager.merge_and_update(new_reviews)
+        after = manager.get_statistics()["total_reviews"]
 
-        try:
-            # 크롤링 실행
-            new_reviews = crawler.crawl_reviews(
-                url=url,
-                wait_time=CRAWLING_CONFIG["wait_time"],
-                click_wait=CRAWLING_CONFIG["click_wait"]
-            )
-
-            logger.info(f"크롤링 완료: {len(new_reviews)}개 리뷰 수집")
-
-            # ========================================
-            # 2단계: 데이터 관리 (증분 업데이트)
-            # ========================================
-            logger.info("\n" + "=" * 100)
-            logger.info("💾 2단계: 데이터 관리 (증분 업데이트)")
-            logger.info("=" * 100)
-
-            data_manager = ReviewDataManager(str(review_filepath))
-            data_manager.load_data()
-
-            # 기존 데이터 통계
-            old_stats = data_manager.get_statistics()
-            logger.info(f"기존 리뷰: {old_stats['total_reviews']}건")
-
-            # 새로운 리뷰 추가 (중복 제거)
-            added_count = data_manager.merge_and_update(new_reviews)
-
-            # 새로운 통계
-            new_stats = data_manager.get_statistics()
-            logger.info(f"새로 추가된 리뷰: {added_count}건")
-            logger.info(f"총 리뷰: {new_stats['total_reviews']}건")
-
-        except Exception as e:
-            logger.error(f"크롤링 중 오류 발생: {e}")
-            import traceback
-            traceback.print_exc()
-            return
+        logger.info("기존 리뷰: %d건", before)
+        logger.info("신규 추가: %d건", added_count)
+        logger.info("누적 리뷰: %d건", after)
     else:
-        logger.info("\n크롤링 단계를 건너뜁니다.")
+        logger.info("[1/2] 크롤링 단계 건너뜀")
 
-    # ========================================
-    # 3단계: LLM 분석
-    # ========================================
-    if not skip_analysis:
-        logger.info("\n" + "=" * 100)
-        logger.info("🤖 3단계: LLM 기반 리뷰 분석")
-        logger.info("=" * 100)
-
-        try:
-            # 리뷰 데이터 로드
-            import pandas as pd
-            review_df = pd.read_csv(review_filepath)
-            logger.info(f"분석 대상 리뷰: {len(review_df)}건")
-
-            # LLM 분석기 초기화
-            analyzer = LLMReviewAnalyzer()
-
-            # 분석 실행 (체크포인트 지원)
-            analyzed_df = analyzer.analyze_dataframe(
-                df=review_df,
-                review_column='review',
-                checkpoint_file=str(analysis_filepath),
-                max_workers=max_workers
-            )
-
-            logger.info(f"분석 완료: {str(analysis_filepath)}")
-
-        except Exception as e:
-            logger.error(f"LLM 분석 중 오류 발생: {e}")
-            import traceback
-            traceback.print_exc()
-            return
-    else:
-        logger.info("\n분석 단계를 건너뜁니다.")
-
-    # ========================================
-    # 4단계: 리포트 생성
-    # ========================================
-    logger.info("\n" + "=" * 100)
-    logger.info("📊 4단계: 리포트 생성")
-    logger.info("=" * 100)
-
-    try:
-        import pandas as pd
-        analyzed_df = pd.read_csv(analysis_filepath)
-
-        # 분석 완료된 데이터만 필터링
-        analyzed_df = analyzed_df[analyzed_df['시설_점수'].notna()]
-        logger.info(f"분석 완료된 리뷰: {len(analyzed_df)}건")
-
-        # 리포트 생성
-        report_gen = ReportGenerator(analyzed_df)
-        report = report_gen.generate_full_report()
-
-        # 콘솔 출력
-        print("\n" + report)
-
-        # 파일 저장
-        report_filepath = analysis_filepath.parent / f"{store_name}_report.txt"
-        report_gen.save_report(str(report_filepath))
-
-        logger.info(f"리포트 저장: {report_filepath}")
-
-    except Exception as e:
-        logger.error(f"리포트 생성 중 오류 발생: {e}")
-        import traceback
-        traceback.print_exc()
+    if not with_analysis:
+        logger.info("[2/2] LLM 분석 단계 건너뜀 (크롤링 중심 모드)")
+        logger.info("리뷰 데이터 파일: %s", review_filepath)
         return
 
-    # ========================================
-    # 완료
-    # ========================================
-    logger.info("\n" + "=" * 100)
-    logger.info("✅ 파이프라인 완료!")
-    logger.info("=" * 100)
-    logger.info(f"리뷰 데이터: {review_filepath}")
-    logger.info(f"분석 결과: {analysis_filepath}")
-    logger.info(f"리포트: {report_filepath}")
-    logger.info("=" * 100)
+    logger.info("[2/2] LLM 분석 + 리포트")
+    if not review_filepath.exists():
+        raise FileNotFoundError(
+            f"리뷰 파일이 없어 분석할 수 없습니다: {review_filepath}"
+        )
 
+    review_df = pd.read_csv(review_filepath)
+    if "review" not in review_df.columns:
+        raise ValueError(
+            f"'{review_filepath.name}' 파일에 review 컬럼이 없습니다. "
+            "크롤러 출력 파일(예: *_reviews.csv)을 사용하세요."
+        )
 
-def main():
-    """메인 함수"""
-    parser = argparse.ArgumentParser(description="리뷰 분석 파이프라인")
-
-    parser.add_argument(
-        "--store",
-        type=str,
-        default=None,
-        help=f"분석할 매장 (예: {list(STORES.keys())[0]})"
+    analyzer = LLMReviewAnalyzer()
+    analyzed_df = analyzer.analyze_dataframe(
+        df=review_df,
+        review_column="review",
+        checkpoint_file=str(analysis_filepath),
+        max_workers=max_workers,
     )
+
+    analyzed_df = analyzed_df[analyzed_df["시설_점수"].notna()]
+    report = ReportGenerator(analyzed_df)
+    report_path = analysis_filepath.parent / f"{store_name}_report.txt"
+    report.save_report(str(report_path))
+
+    logger.info("분석 결과: %s", analysis_filepath)
+    logger.info("리포트: %s", report_path)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="리뷰 파이프라인 (크롤링 중심)")
+    parser.add_argument("--store", type=str, default=None, help="대상 매장 키")
+    parser.add_argument("--all", action="store_true", help="등록된 매장 전체 실행")
+    parser.add_argument("--skip-crawling", action="store_true", help="크롤링 단계 건너뜀")
     parser.add_argument(
-        "--skip-crawling",
+        "--with-analysis",
         action="store_true",
-        help="크롤링 건너뛰기 (기존 데이터 사용)"
+        help="LLM 분석/리포트 단계까지 실행",
     )
-    parser.add_argument(
-        "--skip-analysis",
-        action="store_true",
-        help="LLM 분석 건너뛰기 (기존 분석 사용)"
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=10,
-        help="LLM 분석 병렬 작업 수 (기본: 10)"
-    )
+    parser.add_argument("--workers", type=int, default=10, help="LLM 분석 병렬 작업 수")
+    parser.add_argument("--wait-time", type=int, default=CRAWLING_CONFIG["wait_time"])
+    parser.add_argument("--click-wait", type=int, default=CRAWLING_CONFIG["click_wait"])
+    parser.add_argument("--headless", action="store_true", help="헤드리스 크롬 사용")
 
     args = parser.parse_args()
 
-    # 매장 선택
-    if args.store:
-        store_key = args.store
+    if args.all:
+        targets = list(STORES.keys())
+    elif args.store:
+        targets = [args.store]
     else:
-        store_key = list(STORES.keys())[0]
-        logger.info(f"매장이 지정되지 않아 기본 매장({store_key})을 사용합니다.")
+        targets = [list(STORES.keys())[0]]
+        logger.info("매장이 지정되지 않아 기본 매장(%s) 사용", targets[0])
 
-    # 파이프라인 실행
-    run_full_pipeline(
-        store_key=store_key,
-        skip_crawling=args.skip_crawling,
-        skip_analysis=args.skip_analysis,
-        max_workers=args.workers
-    )
+    for key in targets:
+        run_store_pipeline(
+            store_key=key,
+            skip_crawling=args.skip_crawling,
+            with_analysis=args.with_analysis,
+            max_workers=args.workers,
+            wait_time=args.wait_time,
+            click_wait=args.click_wait,
+            headless=args.headless,
+        )
 
 
 if __name__ == "__main__":

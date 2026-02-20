@@ -8,9 +8,10 @@ cd total_pipeline
 pip install -r requirements.txt
 ```
 
-.env 파일에 OpenAI API 키 설정:
+.env 파일 또는 ~/.zshrc에 OpenAI 설정:
 ```
 OPENAI_API_KEY=your-api-key-here
+OPENAI_MODEL=gpt-5-mini
 ```
 
 ### 2단계: 매장 정보 설정
@@ -153,14 +154,13 @@ python run_pipeline.py --store 홍대점
 
 ## 비용 계산
 
-### OpenAI API 비용 (gpt-4o-mini)
-- 입력: $0.150 / 1M tokens
-- 출력: $0.600 / 1M tokens
+### OpenAI API 비용
+- 비용은 모델과 토큰 사용량에 따라 달라집니다.
+- 기본 모델은 `gpt-5-mini`입니다.
 
 ### 예상 비용
-- 리뷰 1개: 약 500 tokens (입력) + 300 tokens (출력) = 약 $0.001
-- 100개 리뷰: 약 $0.10
-- 1000개 리뷰: 약 $1.00
+- 리뷰 수와 프롬프트 길이에 비례해 선형적으로 증가합니다.
+- 정확한 단가는 OpenAI 공식 요금표 기준으로 계산하세요.
 
 ### 비용 절감 팁
 1. 증분 업데이트 사용 (새로운 리뷰만 분석)
