@@ -380,27 +380,31 @@ html.page-leave .shell {
 }
 
 .scroll-top-wrap {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.65rem;
   padding: 0 1rem 0.25rem;
 }
 
 .scroll-top-btn {
-  border: 1px solid rgba(248, 250, 252, 0.24);
-  background: #111827;
+  grid-column: 1;
+  justify-self: center;
+  border: 1px solid rgba(248, 250, 252, 0.22);
+  background: linear-gradient(120deg, rgba(14, 116, 144, 0.94), rgba(229, 138, 45, 0.9));
   color: #f8fafc;
   border-radius: 999px;
-  padding: 0.43rem 0.85rem;
+  padding: 0.46rem 1rem;
+  min-width: 112px;
   font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.28);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.36);
 }
 
 .scroll-top-btn:hover {
-  background: #1f2937;
-  border-color: rgba(248, 250, 252, 0.4);
-  box-shadow: 0 11px 20px rgba(15, 23, 42, 0.34);
+  border-color: rgba(248, 250, 252, 0.36);
+  filter: saturate(1.1) brightness(1.06);
+  box-shadow: 0 14px 26px rgba(15, 23, 42, 0.42);
 }
 
 .bubble {
@@ -776,6 +780,15 @@ html.page-leave .shell {
 
   .composer button {
     min-height: 44px;
+  }
+
+  .scroll-top-wrap {
+    grid-template-columns: 1fr;
+    padding: 0 1rem 0.35rem;
+  }
+
+  .scroll-top-btn {
+    grid-column: 1;
   }
 
   .chat-header {
