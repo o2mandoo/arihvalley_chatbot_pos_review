@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useChat } from 'ai/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 
 const CHAT_STORAGE_KEY = 'sales-analyst:messages:v1';
 const REVIEW_CHAT_URL = process.env.NEXT_PUBLIC_REVIEW_CHAT_URL?.trim() || '/';
@@ -22,15 +24,46 @@ const QUICK_PROMPTS = [
   '객단가가 높은 시간대를 찾아줘',
 ];
 
+const MARKDOWN_SCHEMA = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames || []), 'span'],
+  attributes: {
+    ...(defaultSchema.attributes || {}),
+    span: [...((defaultSchema.attributes && defaultSchema.attributes.span) || []), ['className', 'neg-highlight']],
+  },
+};
+
 function MarkdownMessage({ content }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeRaw, [rehypeSanitize, MARKDOWN_SCHEMA]]}
       components={{
         table: ({ ...props }) => <table className="md-table" {...props} />,
         th: ({ ...props }) => <th className="md-th" {...props} />,
         td: ({ ...props }) => <td className="md-td" {...props} />,
-        pre: ({ ...props }) => <pre className="md-pre" {...props} />,
+        pre: ({ children, ...props }) => {
+          const child = Array.isArray(children) ? children[0] : children;
+          const className = child?.props?.className || '';
+          const isSqlBlock = typeof className === 'string' && className.includes('language-sql');
+
+          if (isSqlBlock) {
+            return (
+              <details className="sql-toggle">
+                <summary>분석 근거(SQL) 보기</summary>
+                <pre className="md-pre" {...props}>
+                  {children}
+                </pre>
+              </details>
+            );
+          }
+
+          return (
+            <pre className="md-pre" {...props}>
+              {children}
+            </pre>
+          );
+        },
         code: ({ ...props }) => <code className="md-code" {...props} />,
       }}
     >

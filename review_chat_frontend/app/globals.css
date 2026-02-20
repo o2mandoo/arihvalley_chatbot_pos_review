@@ -262,8 +262,28 @@ body {
   overflow-x: auto;
 }
 
+.sql-toggle {
+  margin-top: 0.5rem;
+}
+
+.sql-toggle summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.84rem;
+  user-select: none;
+}
+
+.sql-toggle[open] summary {
+  margin-bottom: 0.45rem;
+}
+
 .md-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.neg-highlight {
+  color: #c62828;
+  font-weight: 700;
 }
 
 @media (max-width: 980px) {
