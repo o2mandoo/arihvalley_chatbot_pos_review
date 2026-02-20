@@ -68,6 +68,11 @@ NEGATIVE_ANY_PATTERN = re.compile(
     "|".join(f"(?:{pattern})" for pattern in NEGATIVE_SIGNAL_PATTERNS.values()),
     re.IGNORECASE,
 )
+WAITING_SQL_REGEX = r"웨이팅|대기|기다|줄"
+NEGATIVE_ANY_SQL_REGEX = (
+    r"웨이팅|대기|기다리|시끄럽|복잡|혼잡|사람\s*많|늦|느리|오래\s*걸|불친절|응대\s*별로|서비스\s*별로|"
+    r"좁|자리\s*없|좌석|비싸|가격\s*부담|가성비\s*별로|짜|싱겁|아쉽|별로|물리"
+)
 
 FORBIDDEN_SQL = re.compile(
     r"\b(insert|update|delete|drop|alter|create|truncate|replace|merge|grant|revoke)\b",
@@ -137,7 +142,7 @@ class ReviewAnalysisService:
             try:
                 return fast_sql, self.data_store.query(fast_sql)
             except Exception:
-                safe_sql = self._negative_signal_sql(where_clause)
+                safe_sql = self._fallback_sql(question)
                 if safe_sql.strip() == fast_sql.strip():
                     raise
                 return safe_sql, self.data_store.query(safe_sql)
@@ -158,6 +163,10 @@ class ReviewAnalysisService:
     def _fast_template_sql(self, question: str) -> str:
         q = question.lower()
         where_clause = self._branch_where_clause(question)
+
+        metric_sql = self._metric_template_sql(question, where_clause)
+        if metric_sql:
+            return metric_sql
 
         if "숨은" in question and "불만" in question:
             return f"""
@@ -218,6 +227,441 @@ LIMIT 8
         return ""
 
     @staticmethod
+    def _extract_recent_days(question: str) -> Optional[int]:
+        day_match = re.search(r"(\d+)\s*일", question)
+        if day_match:
+            try:
+                days = int(day_match.group(1))
+                if days > 0:
+                    return min(days, 365)
+            except ValueError:
+                pass
+
+        week_match = re.search(r"(\d+)\s*주", question)
+        if week_match:
+            try:
+                weeks = int(week_match.group(1))
+                if weeks > 0:
+                    return min(weeks * 7, 365)
+            except ValueError:
+                pass
+
+        month_match = re.search(r"(\d+)\s*(개월|달)", question)
+        if month_match:
+            try:
+                months = int(month_match.group(1))
+                if months > 0:
+                    return min(months * 30, 365)
+            except ValueError:
+                pass
+
+        normalized = question.replace(" ", "")
+        if "일주일" in normalized:
+            return 7
+        if "보름" in normalized:
+            return 15
+        if "한달" in normalized or "한달간" in normalized:
+            return 30
+        if "한달반" in normalized:
+            return 45
+        return None
+
+    @staticmethod
+    def _extract_single_day_offset(question: str) -> Optional[int]:
+        normalized = question.replace(" ", "")
+        if "오늘" in normalized:
+            return 0
+        if "어제" in normalized:
+            return 1
+        if "그제" in normalized or "그저께" in normalized:
+            return 2
+        return None
+
+    @staticmethod
+    def _has_recent_hint(question: str) -> bool:
+        normalized = question.replace(" ", "")
+        return any(
+            token in normalized
+            for token in (
+                "최근",
+                "요즘",
+                "지난",
+                "근래",
+                "이번주",
+                "저번주",
+                "이번달",
+                "지난달",
+                "오늘",
+                "어제",
+                "그저께",
+            )
+        )
+
+    @staticmethod
+    def _has_metric_request(question: str) -> bool:
+        lowered = question.lower()
+        return any(
+            token in lowered
+            for token in (
+                "몇개",
+                "몇 개",
+                "개수",
+                "몇건",
+                "몇 건",
+                "건수",
+                "count",
+                "얼마",
+                "총",
+                "합계",
+                "비율",
+                "퍼센트",
+                "%",
+                "비중",
+            )
+        )
+
+    def _is_review_metric_intent(self, question: str) -> bool:
+        has_review = any(token in question for token in ("리뷰", "후기"))
+        has_structure_intent = self._is_daily_breakdown_intent(question) or self._is_branch_breakdown_intent(question)
+        return has_review and (self._has_metric_request(question) or has_structure_intent)
+
+    def _is_waiting_metric_intent(self, question: str) -> bool:
+        lowered = question.lower()
+        waiting_tokens = ("웨이팅", "대기", "기다", "줄")
+        has_structure_intent = self._is_daily_breakdown_intent(question) or self._is_branch_breakdown_intent(question)
+        return any(token in lowered for token in waiting_tokens) and (
+            self._has_metric_request(question) or has_structure_intent
+        )
+
+    def _is_negative_metric_intent(self, question: str) -> bool:
+        lowered = question.lower()
+        negative_tokens = ("부정", "불만", "아쉬", "문제", "불편", "컴플레인")
+        has_structure_intent = self._is_daily_breakdown_intent(question) or self._is_branch_breakdown_intent(question)
+        return any(token in lowered for token in negative_tokens) and (
+            self._has_metric_request(question) or has_structure_intent
+        )
+
+    @staticmethod
+    def _is_branch_breakdown_intent(question: str) -> bool:
+        normalized = question.replace(" ", "")
+        return any(token in normalized for token in ("지점별", "매장별", "지점마다", "매장마다"))
+
+    @staticmethod
+    def _is_daily_breakdown_intent(question: str) -> bool:
+        normalized = question.replace(" ", "")
+        return any(token in normalized for token in ("일자별", "날짜별", "하루별", "일별", "추이", "트렌드"))
+
+    def _is_simple_review_count_intent(self, question: str) -> bool:
+        lowered = question.lower()
+        review_tokens = ("리뷰", "후기")
+        count_tokens = ("몇개", "몇 개", "개수", "몇건", "몇 건", "건수", "count", "얼마", "총")
+        blockers = (
+            "지점별",
+            "추이",
+            "비교",
+            "패턴",
+            "불만",
+            "신호",
+            "인사이트",
+            "원인",
+            "예시",
+            "목록",
+            "top",
+            "순위",
+            "분석",
+        )
+
+        if any(token in lowered for token in blockers):
+            return False
+
+        has_review = any(token in question for token in review_tokens)
+        has_count = (
+            any(token in lowered for token in count_tokens)
+            or "리뷰수" in question
+            or "리뷰 개수" in question
+        )
+        has_recent = self._has_recent_hint(question) or (self._extract_recent_days(question) is not None)
+        return has_review and has_count and has_recent
+
+    def _metric_template_sql(self, question: str, where_clause: str) -> str:
+        has_waiting_metric = self._is_waiting_metric_intent(question)
+        has_negative_metric = self._is_negative_metric_intent(question)
+        has_review_metric = self._is_review_metric_intent(question)
+
+        if not (has_review_metric or has_waiting_metric or has_negative_metric):
+            return ""
+
+        days = self._extract_recent_days(question)
+        day_offset = self._extract_single_day_offset(question)
+        has_recent_hint = self._has_recent_hint(question)
+        is_branch = self._is_branch_breakdown_intent(question)
+        is_daily = self._is_daily_breakdown_intent(question)
+
+        if has_waiting_metric:
+            if is_daily:
+                return self._waiting_by_day_sql(where_clause, days or 30)
+            if is_branch:
+                return self._waiting_by_branch_sql(where_clause, days if (days or has_recent_hint) else None)
+            if day_offset is not None:
+                return self._waiting_metric_sql(where_clause, days=1, day_offset=day_offset)
+            return self._waiting_metric_sql(where_clause, days=(days or 30) if has_recent_hint or days else None)
+
+        if has_negative_metric:
+            if is_daily:
+                return self._negative_by_day_sql(where_clause, days or 30)
+            if is_branch:
+                return self._negative_by_branch_sql(where_clause, days if (days or has_recent_hint) else None)
+            if day_offset is not None:
+                return self._negative_metric_sql(where_clause, days=1, day_offset=day_offset)
+            return self._negative_metric_sql(where_clause, days=(days or 30) if has_recent_hint or days else None)
+
+        if has_review_metric:
+            if is_daily:
+                return self._review_count_by_day_sql(where_clause, days or 30)
+            if is_branch:
+                return self._review_count_by_branch_sql(where_clause, days if (days or has_recent_hint) else None)
+            if day_offset is not None:
+                return self._review_count_sql(where_clause, days=1, day_offset=day_offset)
+            if days is not None:
+                return self._review_count_sql(where_clause, days=days)
+            if has_recent_hint:
+                return self._review_count_sql(where_clause, days=7)
+            return self._review_count_sql(where_clause)
+
+        return ""
+
+    @staticmethod
+    def _with_base_reviews_cte(
+        where_clause: str,
+        days: Optional[int] = None,
+        day_offset: Optional[int] = None,
+    ) -> str:
+        if day_offset is not None:
+            offset = max(0, day_offset)
+            return f"""
+WITH scoped AS (
+  SELECT * FROM reviews
+  WHERE {where_clause}
+),
+latest AS (
+  SELECT MAX(review_date) AS max_date FROM scoped
+),
+base_reviews AS (
+  SELECT s.*
+  FROM scoped s
+  CROSS JOIN latest l
+  WHERE s.review_date IS NOT NULL
+    AND l.max_date IS NOT NULL
+    AND s.review_date = l.max_date - INTERVAL {offset} DAY
+)
+""".strip()
+
+        if days is not None:
+            safe_days = max(1, min(days, 365))
+            lookback_days = safe_days - 1
+            return f"""
+WITH scoped AS (
+  SELECT * FROM reviews
+  WHERE {where_clause}
+),
+latest AS (
+  SELECT MAX(review_date) AS max_date FROM scoped
+),
+base_reviews AS (
+  SELECT s.*
+  FROM scoped s
+  CROSS JOIN latest l
+  WHERE s.review_date IS NOT NULL
+    AND l.max_date IS NOT NULL
+    AND s.review_date >= l.max_date - INTERVAL {lookback_days} DAY
+    AND s.review_date <= l.max_date
+)
+""".strip()
+
+        return f"""
+WITH base_reviews AS (
+  SELECT * FROM reviews
+  WHERE {where_clause}
+)
+""".strip()
+
+    def _review_count_sql(
+        self,
+        where_clause: str,
+        days: Optional[int] = None,
+        day_offset: Optional[int] = None,
+    ) -> str:
+        with_clause = self._with_base_reviews_cte(
+            where_clause=where_clause,
+            days=days,
+            day_offset=day_offset,
+        )
+        return f"""
+{with_clause}
+SELECT
+  COUNT(*) AS review_count,
+  MIN(review_date) AS start_date,
+  MAX(review_date) AS end_date
+FROM base_reviews
+""".strip()
+
+    def _review_count_by_branch_sql(self, where_clause: str, days: Optional[int] = None) -> str:
+        with_clause = self._with_base_reviews_cte(where_clause=where_clause, days=days)
+        return f"""
+{with_clause}
+SELECT
+  branch_name,
+  COUNT(*) AS review_count
+FROM base_reviews
+GROUP BY branch_name
+ORDER BY review_count DESC
+LIMIT 20
+""".strip()
+
+    def _review_count_by_day_sql(self, where_clause: str, days: int) -> str:
+        with_clause = self._with_base_reviews_cte(where_clause=where_clause, days=days)
+        return f"""
+{with_clause}
+SELECT
+  review_date,
+  COUNT(*) AS review_count
+FROM base_reviews
+GROUP BY review_date
+ORDER BY review_date ASC
+""".strip()
+
+    def _waiting_metric_sql(
+        self,
+        where_clause: str,
+        days: Optional[int] = None,
+        day_offset: Optional[int] = None,
+    ) -> str:
+        with_clause = self._with_base_reviews_cte(
+            where_clause=where_clause,
+            days=days,
+            day_offset=day_offset,
+        )
+        return f"""
+{with_clause},
+waiting AS (
+  SELECT * FROM base_reviews
+  WHERE regexp_matches(review_content, '{WAITING_SQL_REGEX}', 'i')
+)
+SELECT
+  COUNT(*) AS waiting_review_count,
+  ROUND(100.0 * COUNT(*) / NULLIF((SELECT COUNT(*) FROM base_reviews), 0), 1) AS waiting_ratio_pct,
+  MIN(review_date) AS start_date,
+  MAX(review_date) AS end_date
+FROM waiting
+""".strip()
+
+    def _waiting_by_branch_sql(self, where_clause: str, days: Optional[int] = None) -> str:
+        with_clause = self._with_base_reviews_cte(where_clause=where_clause, days=days)
+        return f"""
+{with_clause},
+waiting AS (
+  SELECT * FROM base_reviews
+  WHERE regexp_matches(review_content, '{WAITING_SQL_REGEX}', 'i')
+)
+SELECT
+  branch_name,
+  COUNT(*) AS waiting_review_count
+FROM waiting
+GROUP BY branch_name
+ORDER BY waiting_review_count DESC
+LIMIT 20
+""".strip()
+
+    def _waiting_by_day_sql(self, where_clause: str, days: int) -> str:
+        with_clause = self._with_base_reviews_cte(where_clause=where_clause, days=days)
+        return f"""
+{with_clause},
+waiting AS (
+  SELECT * FROM base_reviews
+  WHERE regexp_matches(review_content, '{WAITING_SQL_REGEX}', 'i')
+)
+SELECT
+  review_date,
+  COUNT(*) AS waiting_review_count
+FROM waiting
+GROUP BY review_date
+ORDER BY review_date ASC
+""".strip()
+
+    def _negative_metric_sql(
+        self,
+        where_clause: str,
+        days: Optional[int] = None,
+        day_offset: Optional[int] = None,
+    ) -> str:
+        with_clause = self._with_base_reviews_cte(
+            where_clause=where_clause,
+            days=days,
+            day_offset=day_offset,
+        )
+        return f"""
+{with_clause},
+negative_reviews AS (
+  SELECT * FROM base_reviews
+  WHERE regexp_matches(review_content, '{NEGATIVE_ANY_SQL_REGEX}', 'i')
+)
+SELECT
+  COUNT(*) AS negative_review_count,
+  ROUND(100.0 * COUNT(*) / NULLIF((SELECT COUNT(*) FROM base_reviews), 0), 1) AS negative_ratio_pct,
+  MIN(review_date) AS start_date,
+  MAX(review_date) AS end_date
+FROM negative_reviews
+""".strip()
+
+    def _negative_by_branch_sql(self, where_clause: str, days: Optional[int] = None) -> str:
+        with_clause = self._with_base_reviews_cte(where_clause=where_clause, days=days)
+        return f"""
+{with_clause},
+negative_reviews AS (
+  SELECT * FROM base_reviews
+  WHERE regexp_matches(review_content, '{NEGATIVE_ANY_SQL_REGEX}', 'i')
+)
+SELECT
+  branch_name,
+  COUNT(*) AS negative_review_count
+FROM negative_reviews
+GROUP BY branch_name
+ORDER BY negative_review_count DESC
+LIMIT 20
+""".strip()
+
+    def _negative_by_day_sql(self, where_clause: str, days: int) -> str:
+        with_clause = self._with_base_reviews_cte(where_clause=where_clause, days=days)
+        return f"""
+{with_clause},
+negative_reviews AS (
+  SELECT * FROM base_reviews
+  WHERE regexp_matches(review_content, '{NEGATIVE_ANY_SQL_REGEX}', 'i')
+)
+SELECT
+  review_date,
+  COUNT(*) AS negative_review_count
+FROM negative_reviews
+GROUP BY review_date
+ORDER BY review_date ASC
+""".strip()
+
+    @staticmethod
+    def _latest_reviews_sql(where_clause: str) -> str:
+        return f"""
+SELECT
+  review_id,
+  review_date,
+  branch_name,
+  nickname,
+  review_content
+FROM reviews
+WHERE {where_clause}
+ORDER BY review_date DESC
+LIMIT 20
+""".strip()
+
+    @staticmethod
     def _is_negative_signal_intent(question: str) -> bool:
         lowered = question.lower()
         repeat_tokens = ("반복", "자주", "많이", "빈번", "계속")
@@ -268,10 +712,14 @@ LIMIT 10
 
     def _fallback_sql(self, question: str) -> str:
         where_clause = self._branch_where_clause(question)
+        metric_sql = self._metric_template_sql(question, where_clause)
+        if metric_sql:
+            return metric_sql
+
         template_sql = self._fast_template_sql(question)
         if template_sql:
             return template_sql
-        return self._negative_signal_sql(where_clause)
+        return self._latest_reviews_sql(where_clause)
 
     @staticmethod
     def _branch_where_clause(question: str) -> str:
@@ -574,6 +1022,14 @@ LIMIT 10
         scope_label: str,
         scope_df: pd.DataFrame,
     ) -> str:
+        if self._should_use_compact_answer(question, query_result):
+            return self._build_compact_markdown(
+                question=question,
+                sql=sql,
+                query_result=query_result,
+                scope_label=scope_label,
+            )
+
         revisit_metrics = self._compute_revisit_metrics(scope_df)
         lines: List[str] = []
         lines.append("## 리뷰 분석 결과")
@@ -651,6 +1107,199 @@ LIMIT 10
         lines.append("```")
 
         return "\n".join(lines).strip()
+
+    def _should_use_compact_answer(self, question: str, query_result: pd.DataFrame) -> bool:
+        if self._is_structured_metric_intent(question):
+            return True
+
+        lowered = question.lower()
+        direct_tokens = ("몇개", "몇 개", "개수", "몇건", "몇 건", "건수", "count", "얼마")
+        has_direct_metric_question = any(token in lowered for token in direct_tokens)
+        is_small_result = len(query_result) <= 3 and len(query_result.columns) <= 4
+        return has_direct_metric_question and is_small_result
+
+    def _is_structured_metric_intent(self, question: str) -> bool:
+        return (
+            self._is_review_metric_intent(question)
+            or self._is_waiting_metric_intent(question)
+            or self._is_negative_metric_intent(question)
+        )
+
+    def _build_compact_markdown(
+        self,
+        question: str,
+        sql: str,
+        query_result: pd.DataFrame,
+        scope_label: str,
+    ) -> str:
+        lines: List[str] = []
+        lines.append("## 리뷰 분석 결과")
+        lines.append(f"- 질문: {question}")
+        lines.append(f"- 분석 범위: {scope_label}")
+        lines.append("")
+
+        lines.append("### 답변")
+        lines.append(self._summarize_compact_answer(question, query_result))
+        lines.append("")
+
+        lines.append("### 결과 표")
+        if len(query_result) == 0:
+            lines.append("조회 결과가 없습니다.")
+        else:
+            preview = self._mask_sensitive_df(query_result.head(self.max_table_rows))
+            preview = self._localize_columns(preview)
+            lines.append(self._df_to_markdown(preview))
+            if len(query_result) > self.max_table_rows:
+                lines.append("")
+                lines.append(
+                    f"_표시는 상위 {self.max_table_rows}행입니다. (전체 {len(query_result)}행)_"
+                )
+        lines.append("")
+
+        lines.append("```sql")
+        lines.append(sql)
+        lines.append("```")
+        return "\n".join(lines).strip()
+
+    def _summarize_compact_answer(self, question: str, query_result: pd.DataFrame) -> str:
+        if len(query_result) == 0:
+            return "- 조회 결과가 없습니다."
+
+        row = query_result.iloc[0]
+        column_lookup = {str(column).strip().lower(): column for column in query_result.columns}
+
+        branch_column = self._find_column_name(column_lookup, candidates=("branch_name", "지점명"))
+        date_column = self._find_column_name(
+            column_lookup,
+            candidates=("review_date", "date", "review_day", "일자"),
+        )
+
+        waiting_count_column = self._find_column_name(
+            column_lookup,
+            candidates=("waiting_review_count", "waiting_count"),
+        )
+        negative_count_column = self._find_column_name(
+            column_lookup,
+            candidates=("negative_review_count",),
+        )
+        count_column = self._find_column_name(
+            column_lookup,
+            candidates=("review_count", "count", "cnt", "review_cnt", "건수", "개수", "mention_count"),
+        )
+        metric_label = "리뷰"
+        if waiting_count_column is not None:
+            count_column = waiting_count_column
+            metric_label = "웨이팅 언급 리뷰"
+        elif negative_count_column is not None:
+            count_column = negative_count_column
+            metric_label = "부정 신호 리뷰"
+
+        ratio_column = self._find_column_name(
+            column_lookup,
+            candidates=("waiting_ratio_pct", "negative_ratio_pct", "ratio_pct", "ratio", "pct_of_recent"),
+        )
+
+        if count_column is None:
+            for column in query_result.columns:
+                try:
+                    numeric_value = pd.to_numeric(row[column], errors="coerce")
+                except Exception:
+                    numeric_value = None
+                if numeric_value is not None and not pd.isna(numeric_value):
+                    count_column = column
+                    break
+
+        if count_column is None:
+            return "- 요청하신 결과를 표로 정리했습니다."
+
+        count_value = pd.to_numeric(row[count_column], errors="coerce")
+        if pd.isna(count_value):
+            return "- 요청하신 결과를 표로 정리했습니다."
+
+        numeric_series = pd.to_numeric(query_result[count_column], errors="coerce").fillna(0)
+        if branch_column is not None and len(query_result) > 1:
+            top_idx = numeric_series.idxmax()
+            top_count = int(numeric_series.loc[top_idx])
+            top_branch = str(query_result.loc[top_idx, branch_column])
+            total_count = int(numeric_series.sum())
+            return (
+                f"- 지점별 {metric_label}를 집계했습니다. 총 **{total_count:,}건**, "
+                f"가장 많은 지점은 **{top_branch} ({top_count:,}건)**입니다."
+            )
+
+        if date_column is not None and len(query_result) > 1:
+            top_idx = numeric_series.idxmax()
+            top_count = int(numeric_series.loc[top_idx])
+            top_date = self._format_date(query_result.loc[top_idx, date_column])
+            start_date = self._format_date(query_result[date_column].min())
+            end_date = self._format_date(query_result[date_column].max())
+            total_count = int(numeric_series.sum())
+            period_text = f"{start_date} ~ {end_date}" if start_date and end_date else "집계 구간"
+            return (
+                f"- 일자별 {metric_label}를 집계했습니다. 총 **{total_count:,}건**이며, "
+                f"가장 많은 날은 **{top_date} ({top_count:,}건)**입니다. (기간: {period_text})"
+            )
+
+        count_text = f"{int(count_value):,}"
+        days = self._extract_recent_days(question)
+        day_offset = self._extract_single_day_offset(question)
+        start_column = self._find_column_name(
+            column_lookup,
+            candidates=("start_date", "min_date", "from_date", "period_start", "시작일"),
+        )
+        end_column = self._find_column_name(
+            column_lookup,
+            candidates=("end_date", "max_date", "to_date", "period_end", "종료일"),
+        )
+
+        period_text = ""
+        if start_column and end_column:
+            start_text = self._format_date(row[start_column])
+            end_text = self._format_date(row[end_column])
+            if start_text and end_text:
+                period_text = f"집계 기간: {start_text} ~ {end_text}"
+
+        ratio_text = ""
+        if ratio_column is not None:
+            ratio_value = pd.to_numeric(row[ratio_column], errors="coerce")
+            if ratio_value is not None and not pd.isna(ratio_value):
+                ratio_text = f"비율: {float(ratio_value):.1f}%"
+
+        context_prefix = ""
+        if day_offset == 0:
+            context_prefix = "오늘 기준 "
+        elif day_offset == 1:
+            context_prefix = "어제 기준 "
+        elif day_offset == 2:
+            context_prefix = "그저께 기준 "
+        elif days:
+            context_prefix = f"최근 {days}일 기준 "
+        elif self._has_recent_hint(question):
+            context_prefix = "최근 기준 "
+
+        extras = [text for text in (period_text, ratio_text) if text]
+        extras_text = f" ({', '.join(extras)})" if extras else ""
+        return f"- {context_prefix}{metric_label} 개수는 **{count_text}건**입니다.{extras_text}"
+
+    @staticmethod
+    def _find_column_name(
+        column_lookup: Dict[str, object],
+        candidates: Tuple[str, ...],
+    ) -> Optional[object]:
+        for candidate in candidates:
+            found = column_lookup.get(candidate.lower())
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _format_date(value: object) -> str:
+        if value is None or pd.isna(value):
+            return ""
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            return str(value)
+        return parsed.strftime("%Y-%m-%d")
 
     def _vary_sentence(self, variants: List[str], **kwargs: object) -> str:
         if not variants:
@@ -961,15 +1610,22 @@ LIMIT 10
         normalized = column_name.strip().lower()
         mapping = {
             "review_id": "리뷰 번호",
+            "review_count": "리뷰 개수",
             "signal": "신호",
             "mention_count": "언급 건수",
             "ratio_pct": "비율(%)",
             "review_date": "리뷰 일자",
+            "start_date": "집계 시작일",
+            "end_date": "집계 종료일",
             "branch_name": "지점명",
             "nickname": "닉네임",
             "review_content": "리뷰 내용",
             "wait_time": "대기시간",
             "waiting_count": "웨이팅 언급 건수",
+            "waiting_review_count": "웨이팅 리뷰 건수",
+            "waiting_ratio_pct": "웨이팅 비율(%)",
+            "negative_review_count": "부정 리뷰 건수",
+            "negative_ratio_pct": "부정 비율(%)",
             "keyword": "키워드",
             "occurrences": "언급 건수",
             "pct_of_recent": "최근 비율(%)",
