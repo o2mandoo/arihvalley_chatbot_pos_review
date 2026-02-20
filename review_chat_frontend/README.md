@@ -27,6 +27,7 @@ npm run dev
    - `REVIEW_BACKEND_URL_PREVIEW=https://<preview-backend-domain>`
    - `REVIEW_BACKEND_URL_PRODUCTION=https://<production-backend-domain>`
    - (선택) `REVIEW_BACKEND_URL` : fallback 용도
+   - (선택) `NEXT_PUBLIC_SALES_CHAT_URL=https://<sales-chatbot-url>`
 3. 각 변수에 환경 지정:
    - `REVIEW_BACKEND_URL_PREVIEW` -> Preview
    - `REVIEW_BACKEND_URL_PRODUCTION` -> Production
@@ -56,4 +57,4 @@ vercel env add REVIEW_BACKEND_URL_PRODUCTION production
   - `vercelEnv` (`preview` 또는 `production`, 로컬이면 빈 값)
   - `source` (`REVIEW_BACKEND_URL_PREVIEW` 또는 `REVIEW_BACKEND_URL_PRODUCTION`)
   - `backendUrl` (실제 선택된 백엔드 URL)
-- UI 좌측 `Runtime Check` 카드에서도 동일 정보를 확인 가능
+- 운영 화면에는 Runtime 체크 UI를 노출하지 않도록 구성되어 있으며, 필요 시 `/api/runtime`로만 확인합니다.

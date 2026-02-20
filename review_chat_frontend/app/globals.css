@@ -72,15 +72,29 @@ body {
   font-size: 0.95rem;
 }
 
-.runtime-line {
-  margin: 0.2rem 0;
-  font-size: 0.82rem;
-  color: var(--muted);
+.switch-btn {
+  display: inline-block;
+  width: 100%;
+  text-align: center;
+  text-decoration: none;
+  border: none;
+  border-radius: 10px;
+  padding: 0.58rem 0.7rem;
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
 }
 
-.runtime-line code {
-  color: var(--ink);
-  word-break: break-all;
+.switch-btn.disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.switch-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
 .quick-btn {
