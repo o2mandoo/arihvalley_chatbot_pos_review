@@ -2,7 +2,7 @@ import json
 import random
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from openai import OpenAI
@@ -1058,6 +1058,12 @@ LIMIT 10
                 )
         lines.append("")
 
+        chart_block = self._build_chart_markdown(question, query_result, signal_df)
+        if chart_block:
+            lines.append("### 그래프")
+            lines.append(chart_block)
+            lines.append("")
+
         lines.append("### 2) 반복 부정 신호")
         if len(signal_df) == 0:
             lines.append("신호를 계산할 데이터가 없습니다.")
@@ -1163,10 +1169,262 @@ LIMIT 10
                 )
         lines.append("")
 
+        chart_block = self._build_chart_markdown(question, query_result)
+        if chart_block:
+            lines.append("### 그래프")
+            lines.append(chart_block)
+            lines.append("")
+
         lines.append("```sql")
         lines.append(sql)
         lines.append("```")
         return "\n".join(lines).strip()
+
+    def _build_chart_markdown(
+        self,
+        question: str,
+        query_result: pd.DataFrame,
+        signal_df: Optional[pd.DataFrame] = None,
+    ) -> str:
+        spec = self._build_chart_spec_from_result(query_result)
+        if spec is None and signal_df is not None:
+            spec = self._build_chart_spec_from_signal_df(signal_df)
+        if spec is None:
+            spec = self._build_chart_spec_from_period(question, query_result)
+        if spec is None:
+            return ""
+        return "```chart\n" + json.dumps(spec, ensure_ascii=False) + "\n```"
+
+    def _build_chart_spec_from_result(self, query_result: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        if len(query_result) < 2:
+            return None
+
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+        x_col = self._find_column_name(
+            lookup,
+            ("review_date", "branch_name", "signal", "keyword"),
+        )
+        if x_col is None:
+            return None
+
+        series_priority = (
+            "review_count",
+            "waiting_review_count",
+            "negative_review_count",
+            "mention_count",
+            "ratio_pct",
+            "waiting_ratio_pct",
+            "negative_ratio_pct",
+            "count",
+        )
+        series_cols: List[object] = []
+        for key in series_priority:
+            found = self._find_column_name(lookup, (key,))
+            if found is not None and found != x_col and found not in series_cols:
+                series_cols.append(found)
+            if len(series_cols) >= 2:
+                break
+
+        if len(series_cols) == 0:
+            for column in query_result.columns:
+                if column == x_col:
+                    continue
+                numeric = pd.to_numeric(query_result[column], errors="coerce")
+                if numeric.notna().sum() >= max(2, len(query_result) // 2):
+                    series_cols.append(column)
+                if len(series_cols) >= 2:
+                    break
+
+        if len(series_cols) == 0:
+            return None
+
+        working = query_result.copy()
+        x_name = str(x_col).strip().lower()
+        if x_name == "review_date":
+            working = working.sort_values(by=x_col, ascending=True)
+
+        data: List[Dict[str, Any]] = []
+        for _, row in working.iterrows():
+            x_value = self._format_chart_x_value(x_col, row[x_col])
+            if x_value == "":
+                continue
+            point: Dict[str, Any] = {"x": x_value}
+            for column in series_cols:
+                numeric = pd.to_numeric(row[column], errors="coerce")
+                if pd.isna(numeric):
+                    numeric = 0.0
+                point[str(column)] = float(numeric)
+            data.append(point)
+
+        if len(data) < 2:
+            return None
+
+        chart_type = "line" if x_name == "review_date" else "bar"
+        series = [
+            {
+                "key": str(column),
+                "label": self._chart_column_label(str(column)),
+                "format": self._chart_series_format(str(column)),
+            }
+            for column in series_cols
+        ]
+        return {
+            "chartType": chart_type,
+            "title": self._chart_title_for_x(str(x_col)),
+            "subtitle": "질문 결과를 시각화했습니다.",
+            "xKey": "x",
+            "series": series,
+            "data": data[:60],
+        }
+
+    def _build_chart_spec_from_signal_df(self, signal_df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        if len(signal_df) < 2:
+            return None
+        if "신호" not in signal_df.columns or "언급수" not in signal_df.columns:
+            return None
+
+        rows = signal_df.copy()
+        rows = rows.head(7)
+        data = []
+        for _, row in rows.iterrows():
+            signal = self._clip_cell(row["신호"], max_len=24)
+            mention_count = pd.to_numeric(row["언급수"], errors="coerce")
+            if pd.isna(mention_count):
+                mention_count = 0.0
+            data.append({"x": signal, "mention_count": float(mention_count)})
+
+        if len(data) < 2:
+            return None
+
+        return {
+            "chartType": "bar",
+            "title": "반복 부정 신호 분포",
+            "subtitle": "언급 건수 기준 상위 신호입니다.",
+            "xKey": "x",
+            "series": [{"key": "mention_count", "label": "언급 건수", "format": "count"}],
+            "data": data,
+        }
+
+    def _build_chart_spec_from_period(
+        self,
+        question: str,
+        query_result: pd.DataFrame,
+    ) -> Optional[Dict[str, Any]]:
+        if len(query_result) == 0:
+            return None
+
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+        start_col = self._find_column_name(lookup, ("start_date",))
+        end_col = self._find_column_name(lookup, ("end_date",))
+        if start_col is None or end_col is None:
+            return None
+
+        start = pd.to_datetime(query_result.iloc[0][start_col], errors="coerce")
+        end = pd.to_datetime(query_result.iloc[0][end_col], errors="coerce")
+        if pd.isna(start) or pd.isna(end):
+            return None
+
+        start_date = start.date()
+        end_date = end.date()
+        day_span = int((end_date - start_date).days) + 1
+        if day_span < 2 or day_span > 62:
+            return None
+
+        where_clause = self._branch_where_clause(question)
+        metric_column = "review_count"
+        metric_label = "리뷰 건수"
+        metric_filter = ""
+
+        if self._find_column_name(lookup, ("waiting_review_count", "waiting_count")) is not None:
+            metric_column = "waiting_review_count"
+            metric_label = "웨이팅 리뷰 건수"
+            metric_filter = f"AND regexp_matches(review_content, '{WAITING_SQL_REGEX}', 'i')"
+        elif self._find_column_name(lookup, ("negative_review_count",)) is not None:
+            metric_column = "negative_review_count"
+            metric_label = "부정 리뷰 건수"
+            metric_filter = f"AND regexp_matches(review_content, '{NEGATIVE_ANY_SQL_REGEX}', 'i')"
+
+        sql = f"""
+SELECT
+  review_date,
+  COUNT(*) AS {metric_column}
+FROM reviews
+WHERE {where_clause}
+  AND review_date IS NOT NULL
+  AND review_date >= DATE '{start_date}'
+  AND review_date <= DATE '{end_date}'
+  {metric_filter}
+GROUP BY review_date
+ORDER BY review_date ASC
+""".strip()
+        trend_df = self.data_store.query(sql)
+        if len(trend_df) < 2:
+            return None
+
+        data = []
+        for _, row in trend_df.iterrows():
+            date_text = self._format_date(row["review_date"])
+            count_value = pd.to_numeric(row[metric_column], errors="coerce")
+            if pd.isna(count_value):
+                count_value = 0.0
+            data.append({"x": date_text, metric_column: float(count_value)})
+
+        return {
+            "chartType": "line",
+            "title": f"{start_date} ~ {end_date} 일자별 추이",
+            "subtitle": "응답 기간을 일 단위로 시각화했습니다.",
+            "xKey": "x",
+            "series": [
+                {
+                    "key": metric_column,
+                    "label": metric_label,
+                    "format": "count",
+                }
+            ],
+            "data": data[:60],
+        }
+
+    def _format_chart_x_value(self, x_col: object, value: Any) -> str:
+        normalized = str(x_col).strip().lower()
+        if normalized == "review_date":
+            return self._format_date(value)
+        return self._clip_cell(value, max_len=40)
+
+    @staticmethod
+    def _chart_series_format(column_name: str) -> str:
+        normalized = column_name.strip().lower()
+        if normalized.endswith("_pct") or normalized.endswith("_ratio") or "ratio" in normalized or "pct" in normalized:
+            return "percent"
+        if "count" in normalized or normalized.endswith("_cnt"):
+            return "count"
+        return "number"
+
+    def _chart_column_label(self, column_name: str) -> str:
+        normalized = column_name.strip().lower()
+        mapping = {
+            "review_date": "리뷰 일자",
+            "branch_name": "지점명",
+            "signal": "신호",
+            "keyword": "키워드",
+            "review_count": "리뷰 건수",
+            "waiting_review_count": "웨이팅 리뷰 건수",
+            "negative_review_count": "부정 리뷰 건수",
+            "mention_count": "언급 건수",
+            "ratio_pct": "비율",
+            "waiting_ratio_pct": "웨이팅 비율",
+            "negative_ratio_pct": "부정 비율",
+        }
+        return mapping.get(normalized, column_name)
+
+    def _chart_title_for_x(self, x_col: str) -> str:
+        normalized = x_col.strip().lower()
+        if normalized == "review_date":
+            return "일자별 추이"
+        if normalized == "branch_name":
+            return "지점별 비교"
+        if normalized == "signal":
+            return "신호별 비교"
+        return "핵심 지표 그래프"
 
     def _summarize_compact_answer(self, question: str, query_result: pd.DataFrame) -> str:
         if len(query_result) == 0:

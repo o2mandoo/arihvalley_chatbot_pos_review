@@ -790,6 +790,12 @@ Rules:
         lines.extend(self._build_insights(question, query_result))
         lines.append("")
 
+        chart_block = self._build_chart_markdown(question, query_result)
+        if chart_block:
+            lines.append("### 3) 그래프")
+            lines.append(chart_block)
+            lines.append("")
+
         lines.append("```sql")
         lines.append(sql)
         lines.append("```")
@@ -818,10 +824,243 @@ Rules:
         lines.append("### 빠른 해석")
         lines.extend(self._build_insights(question, query_result))
         lines.append("")
+
+        chart_block = self._build_chart_markdown(question, query_result)
+        if chart_block:
+            lines.append("### 그래프")
+            lines.append(chart_block)
+            lines.append("")
+
         lines.append("```sql")
         lines.append(sql)
         lines.append("```")
         return "\n".join(lines).strip()
+
+    def _build_chart_markdown(self, question: str, query_result: pd.DataFrame) -> str:
+        spec = self._build_chart_spec_from_result(query_result)
+        if spec is None:
+            spec = self._build_chart_spec_from_period(question, query_result)
+        if spec is None:
+            return ""
+        return "```chart\n" + json.dumps(spec, ensure_ascii=False) + "\n```"
+
+    def _build_chart_spec_from_result(self, query_result: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        if len(query_result) < 2:
+            return None
+
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+        x_col = self._find_column_name(
+            lookup,
+            ("sales_date", "month_bucket", "branch_name", "order_channel", "category", "sales_hour"),
+        )
+        if x_col is None:
+            return None
+
+        series_priority = ("total_sales", "order_count", "avg_order_value")
+        series_cols: List[object] = []
+        for key in series_priority:
+            column = self._find_column_name(lookup, (key,))
+            if column is not None and column != x_col and column not in series_cols:
+                series_cols.append(column)
+
+        if len(series_cols) == 0:
+            for column in query_result.columns:
+                if column == x_col:
+                    continue
+                numeric = pd.to_numeric(query_result[column], errors="coerce")
+                if numeric.notna().sum() >= max(2, len(query_result) // 2):
+                    series_cols.append(column)
+                if len(series_cols) >= 2:
+                    break
+
+        if len(series_cols) == 0:
+            return None
+
+        working = query_result.copy()
+        x_name = str(x_col).strip().lower()
+        if x_name in ("sales_date",):
+            working = working.sort_values(by=x_col, ascending=True)
+        elif x_name in ("sales_hour",):
+            working = working.assign(_x_sort=pd.to_numeric(working[x_col], errors="coerce")).sort_values(
+                by="_x_sort", ascending=True
+            )
+
+        data: List[Dict[str, Any]] = []
+        for _, row in working.iterrows():
+            x_value = self._format_chart_x_value(x_col, row[x_col])
+            if x_value == "":
+                continue
+            point: Dict[str, Any] = {"x": x_value}
+            has_numeric = False
+            for column in series_cols:
+                numeric = pd.to_numeric(row[column], errors="coerce")
+                if pd.isna(numeric):
+                    numeric = 0.0
+                point[str(column)] = float(numeric)
+                has_numeric = True
+            if has_numeric:
+                data.append(point)
+
+        if len(data) < 2:
+            return None
+
+        chart_type = self._resolve_chart_type(x_col=str(x_col), point_count=len(data), series_count=len(series_cols))
+        series = [
+            {
+                "key": str(column),
+                "label": self._chart_column_label(str(column)),
+                "format": self._chart_series_format(str(column)),
+            }
+            for column in series_cols
+        ]
+
+        return {
+            "chartType": chart_type,
+            "title": self._chart_title_for_x(str(x_col), len(series_cols)),
+            "subtitle": "질문 결과를 시각적으로 요약했습니다.",
+            "xKey": "x",
+            "series": series,
+            "data": data[:60],
+        }
+
+    def _build_chart_spec_from_period(self, question: str, query_result: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        period_scope = self._extract_period_scope(question)
+        if period_scope is not None:
+            period_df = self._fetch_daily_sales_chart_by_where(period_scope.where_sql)
+            if len(period_df) >= 2:
+                return self._build_daily_sales_chart_spec(
+                    period_df=period_df,
+                    title=f"{period_scope.label} 일자별 매출 추이",
+                    subtitle="질문한 기간 내 일매출 흐름입니다.",
+                )
+
+        if len(query_result) == 0:
+            return None
+
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+        start_col = self._find_column_name(lookup, ("start_date",))
+        end_col = self._find_column_name(lookup, ("end_date",))
+        if start_col is None or end_col is None:
+            return None
+
+        start = pd.to_datetime(query_result.iloc[0][start_col], errors="coerce")
+        end = pd.to_datetime(query_result.iloc[0][end_col], errors="coerce")
+        if pd.isna(start) or pd.isna(end):
+            return None
+
+        start_date = start.date()
+        end_date = end.date()
+        day_span = int((end_date - start_date).days) + 1
+        if day_span < 2 or day_span > 62:
+            return None
+
+        where_sql = f"sales_date >= DATE '{start_date}' AND sales_date <= DATE '{end_date}'"
+        period_df = self._fetch_daily_sales_chart_by_where(where_sql)
+        if len(period_df) < 2:
+            return None
+        return self._build_daily_sales_chart_spec(
+            period_df=period_df,
+            title=f"{start_date} ~ {end_date} 일자별 매출 추이",
+            subtitle="응답 기간을 일 단위로 시각화했습니다.",
+        )
+
+    def _fetch_daily_sales_chart_by_where(self, where_sql: str) -> pd.DataFrame:
+        sql = f"""
+SELECT
+  sales_date,
+  SUM(net_sales_amount) AS total_sales
+FROM sales
+WHERE sales_date IS NOT NULL
+  AND ({where_sql})
+GROUP BY sales_date
+ORDER BY sales_date ASC
+""".strip()
+        return self.data_store.query(sql)
+
+    def _build_daily_sales_chart_spec(
+        self,
+        period_df: pd.DataFrame,
+        title: str,
+        subtitle: str,
+    ) -> Dict[str, Any]:
+        data = []
+        for _, row in period_df.iterrows():
+            date_text = self._format_date(row["sales_date"])
+            total_sales = float(pd.to_numeric(row["total_sales"], errors="coerce") or 0.0)
+            data.append({"x": date_text, "total_sales": total_sales})
+
+        return {
+            "chartType": "area",
+            "title": title,
+            "subtitle": subtitle,
+            "xKey": "x",
+            "series": [
+                {"key": "total_sales", "label": "일매출", "format": "currency"},
+            ],
+            "data": data[:60],
+        }
+
+    @staticmethod
+    def _resolve_chart_type(x_col: str, point_count: int, series_count: int) -> str:
+        name = x_col.strip().lower()
+        if name in ("sales_date",):
+            return "area" if series_count == 1 else "line"
+        if name in ("sales_hour",):
+            return "line"
+        if point_count > 14 and series_count == 1:
+            return "line"
+        return "bar"
+
+    def _format_chart_x_value(self, x_col: object, value: Any) -> str:
+        name = str(x_col).strip().lower()
+        if name in ("sales_date",):
+            return self._format_date(value)
+        if name in ("sales_hour",):
+            hour = pd.to_numeric(value, errors="coerce")
+            if pd.isna(hour):
+                return ""
+            return f"{int(hour):02d}시"
+        return self._clip_cell(value, max_len=40)
+
+    @staticmethod
+    def _chart_series_format(column_name: str) -> str:
+        normalized = column_name.strip().lower()
+        if normalized in ("total_sales", "avg_order_value", "product_price", "option_price", "net_sales_amount"):
+            return "currency"
+        if normalized.endswith("_count") or "count" in normalized:
+            return "count"
+        if normalized.endswith("_pct") or normalized.endswith("_ratio") or "ratio" in normalized or "pct" in normalized:
+            return "percent"
+        return "number"
+
+    def _chart_column_label(self, column_name: str) -> str:
+        mapping = {
+            "sales_date": "매출 일자",
+            "month_bucket": "월 구분",
+            "branch_name": "지점명",
+            "order_channel": "주문채널",
+            "category": "카테고리",
+            "sales_hour": "시간대",
+            "total_sales": "총매출",
+            "order_count": "주문 건수",
+            "avg_order_value": "객단가",
+        }
+        normalized = column_name.strip().lower()
+        return mapping.get(normalized, column_name)
+
+    def _chart_title_for_x(self, x_col: str, series_count: int) -> str:
+        normalized = x_col.strip().lower()
+        if normalized == "sales_date":
+            return "일자별 추이"
+        if normalized == "sales_hour":
+            return "시간대별 패턴"
+        if normalized == "month_bucket":
+            return "월 비교"
+        if normalized in ("order_channel", "category", "branch_name"):
+            return "구간별 비교"
+        if series_count > 1:
+            return "복합 지표 비교"
+        return "핵심 지표 그래프"
 
     def _summarize_compact_answer(self, question: str, query_result: pd.DataFrame) -> str:
         if len(query_result) == 0:

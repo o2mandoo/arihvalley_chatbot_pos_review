@@ -1,10 +1,11 @@
 'use client';
 
-import { Children, cloneElement, isValidElement, useEffect, useMemo, useRef } from 'react';
+import { Children, cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from 'react';
 import { useChat } from 'ai/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import AnimatedNavLink from '../components/animated-nav-link';
+import MessageChart from '../components/message-chart';
 
 const CHAT_STORAGE_KEY = 'sales-analyst:messages:v1';
 const REVIEW_CHAT_URL = process.env.NEXT_PUBLIC_REVIEW_CHAT_URL?.trim() || '/';
@@ -94,6 +95,18 @@ function MarkdownMessage({ content }) {
           const child = Array.isArray(children) ? children[0] : children;
           const className = child?.props?.className || '';
           const isSqlBlock = typeof className === 'string' && className.includes('language-sql');
+          const isChartBlock =
+            typeof className === 'string' && className.includes('language-chart');
+          const rawCode = child?.props?.children;
+          const codeText = Array.isArray(rawCode)
+            ? rawCode.join('')
+            : typeof rawCode === 'string'
+              ? rawCode
+              : '';
+
+          if (isChartBlock) {
+            return <MessageChart raw={codeText.trim()} />;
+          }
 
           if (isSqlBlock) {
             return (
@@ -122,6 +135,8 @@ function MarkdownMessage({ content }) {
 
 export default function SalesPage() {
   const messagesEndRef = useRef(null);
+  const messagesRef = useRef(null);
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   const {
     messages,
@@ -143,6 +158,27 @@ export default function SalesPage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isLoading]);
+
+  useEffect(() => {
+    const element = messagesRef.current;
+    if (!element) return undefined;
+
+    const onScroll = () => {
+      setShowScrollTop(element.scrollTop > 260);
+    };
+
+    onScroll();
+    element.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      element.removeEventListener('scroll', onScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    const element = messagesRef.current;
+    if (!element) return;
+    setShowScrollTop(element.scrollTop > 260);
   }, [messages, isLoading]);
 
   useEffect(() => {
@@ -222,6 +258,12 @@ export default function SalesPage() {
     }
   };
 
+  const scrollToTop = () => {
+    const element = messagesRef.current;
+    if (!element) return;
+    element.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
     <main className="shell">
       <section className="panel sidebar">
@@ -277,7 +319,7 @@ export default function SalesPage() {
           </div>
         </header>
 
-        <div className="messages">
+        <div className="messages" ref={messagesRef}>
           {messages.map((msg) => (
             <article
               key={msg.id}
@@ -344,6 +386,14 @@ export default function SalesPage() {
 
           <div ref={messagesEndRef} />
         </div>
+
+        {showScrollTop && (
+          <div className="scroll-top-wrap">
+            <button type="button" className="scroll-top-btn" onClick={scrollToTop}>
+              맨 위로
+            </button>
+          </div>
+        )}
 
         <form
           className="composer"

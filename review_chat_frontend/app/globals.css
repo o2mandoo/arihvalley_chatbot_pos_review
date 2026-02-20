@@ -299,6 +299,7 @@ html.page-leave .shell {
 .quick-btn,
 .ghost-btn,
 .copy-btn,
+.scroll-top-btn,
 .composer button {
   transition:
     transform 0.16s ease,
@@ -313,6 +314,7 @@ html.page-leave .shell {
 .quick-btn:hover,
 .ghost-btn:hover,
 .copy-btn:hover,
+.scroll-top-btn:hover,
 .composer button:hover:not(:disabled) {
   transform: translateY(-1px);
 }
@@ -326,6 +328,7 @@ html.page-leave .shell {
 .quick-btn:active,
 .ghost-btn:active,
 .copy-btn:active,
+.scroll-top-btn:active,
 .composer button:active:not(:disabled) {
   transform: translateY(1px) scale(0.985);
 }
@@ -334,6 +337,7 @@ html.page-leave .shell {
 .quick-btn:focus-visible,
 .ghost-btn:focus-visible,
 .copy-btn:focus-visible,
+.scroll-top-btn:focus-visible,
 .composer textarea:focus-visible,
 .composer button:focus-visible {
   outline: 2px solid rgba(255, 255, 255, 0.72);
@@ -347,6 +351,30 @@ html.page-leave .shell {
   flex-direction: column;
   gap: 0.85rem;
   background: transparent;
+}
+
+.scroll-top-wrap {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 1rem 0.25rem;
+}
+
+.scroll-top-btn {
+  border: 1px solid rgba(248, 250, 252, 0.24);
+  background: #111827;
+  color: #f8fafc;
+  border-radius: 999px;
+  padding: 0.43rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.28);
+}
+
+.scroll-top-btn:hover {
+  background: #1f2937;
+  border-color: rgba(248, 250, 252, 0.4);
+  box-shadow: 0 11px 20px rgba(15, 23, 42, 0.34);
 }
 
 .bubble {
@@ -515,6 +543,89 @@ html.page-leave .shell {
   overflow-x: auto;
 }
 
+.chart-block {
+  margin-top: 0.7rem;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 15% 20%, rgba(56, 189, 248, 0.22), transparent 48%),
+    radial-gradient(circle at 85% 15%, rgba(245, 158, 11, 0.22), transparent 45%),
+    linear-gradient(165deg, rgba(11, 18, 32, 0.94), rgba(15, 23, 42, 0.92));
+  box-shadow: 0 16px 34px rgba(2, 6, 23, 0.34);
+  padding: 0.8rem 0.85rem 0.65rem;
+}
+
+.chart-head h4 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.chart-head p {
+  margin: 0.15rem 0 0.65rem;
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 0.8rem;
+}
+
+.chart-canvas {
+  width: 100%;
+  min-height: 280px;
+}
+
+.chart-unit {
+  margin-top: 0.25rem;
+  color: rgba(226, 232, 240, 0.84);
+  font-size: 0.72rem;
+}
+
+.chart-tooltip {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(15, 23, 42, 0.94);
+  border-radius: 10px;
+  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.45);
+  padding: 0.52rem 0.58rem;
+  min-width: 140px;
+}
+
+.chart-tooltip-label {
+  color: #f8fafc;
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-bottom: 0.36rem;
+}
+
+.chart-tooltip-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 0.35rem;
+  color: #e2e8f0;
+  font-size: 0.77rem;
+  margin-top: 0.2rem;
+}
+
+.chart-tooltip-row strong {
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.chart-tooltip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.chart-fallback {
+  margin-top: 0.6rem;
+  border: 1px dashed rgba(248, 250, 252, 0.32);
+  border-radius: 10px;
+  padding: 0.6rem 0.65rem;
+  font-size: 0.82rem;
+  color: rgba(248, 250, 252, 0.86);
+  background: rgba(15, 23, 42, 0.62);
+}
+
 .sql-toggle {
   margin-top: 0.5rem;
 }
@@ -546,6 +657,7 @@ html.page-leave .shell {
   .quick-btn,
   .ghost-btn,
   .copy-btn,
+  .scroll-top-btn,
   .composer textarea,
   .composer button {
     animation: none !important;
