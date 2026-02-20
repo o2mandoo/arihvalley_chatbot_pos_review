@@ -1,4 +1,5 @@
 import './globals.css';
+import PageTransitionController from './page-transition-controller';
 
 export const metadata = {
   title: 'Review Analyst Chat',
@@ -8,7 +9,10 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="ko">
-      <body>{children}</body>
+      <body>
+        <PageTransitionController />
+        {children}
+      </body>
     </html>
   );
 }

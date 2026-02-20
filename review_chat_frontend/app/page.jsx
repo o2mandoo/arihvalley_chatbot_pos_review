@@ -4,6 +4,7 @@ import { Children, cloneElement, isValidElement, useEffect, useMemo, useRef } fr
 import { useChat } from 'ai/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import AnimatedNavLink from './components/animated-nav-link';
 
 const CHAT_STORAGE_KEY = 'review-analyst:messages:v2';
 const SALES_CHAT_URL = process.env.NEXT_PUBLIC_SALES_CHAT_URL?.trim();
@@ -247,9 +248,9 @@ export default function HomePage() {
 
         <div className="card">
           <h2>매출 분석으로 이동</h2>
-          <a className="switch-btn" href={SALES_CHAT_HREF}>
+          <AnimatedNavLink className="switch-btn" href={SALES_CHAT_HREF}>
             매출 분석 챗봇 열기
-          </a>
+          </AnimatedNavLink>
         </div>
 
         <div className="card">
