@@ -5,21 +5,21 @@ import { useChat } from 'ai/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-const CHAT_STORAGE_KEY = 'review-analyst:messages:v1';
-const SALES_CHAT_URL = process.env.NEXT_PUBLIC_SALES_CHAT_URL?.trim();
-const SALES_CHAT_HREF = SALES_CHAT_URL || '/sales';
+const CHAT_STORAGE_KEY = 'sales-analyst:messages:v1';
+const REVIEW_CHAT_URL = process.env.NEXT_PUBLIC_REVIEW_CHAT_URL?.trim() || '/';
+
 const INITIAL_ASSISTANT_MESSAGE = {
-  id: 'welcome',
+  id: 'welcome-sales',
   role: 'assistant',
   content:
-    '## 안녕하세요\n\n매장 리뷰에서 고객 반응을 쉽게 파악해드릴게요. 궁금한 내용을 편하게 질문해 주세요.',
+    '## 안녕하세요\n\n매출 흐름을 보기 쉽게 정리해드릴게요. 궁금한 내용을 편하게 질문해 주세요.',
 };
 
 const QUICK_PROMPTS = [
-  '최근 리뷰에서 자주 반복되는 아쉬운 점을 알려줘',
-  '칭찬 리뷰 안에 숨어 있는 불만 사례를 보여줘',
-  '웨이팅 관련 불만을 보기 쉽게 표로 정리해줘',
-  '지점별로 가장 많이 언급된 불만을 비교해줘',
+  '이번 달 일자별 매출 추이를 표로 보여줘',
+  '전월 대비 매출 증감률을 알려줘',
+  '지점별 매출 순위를 비교해줘',
+  '객단가가 높은 시간대를 찾아줘',
 ];
 
 function MarkdownMessage({ content }) {
@@ -39,7 +39,7 @@ function MarkdownMessage({ content }) {
   );
 }
 
-export default function HomePage() {
+export default function SalesPage() {
   const messagesEndRef = useRef(null);
 
   const {
@@ -55,7 +55,7 @@ export default function HomePage() {
     setMessages,
     stop,
   } = useChat({
-    api: '/api/chat',
+    api: '/api/sales-chat',
     streamProtocol: 'text',
     initialMessages: [INITIAL_ASSISTANT_MESSAGE],
   });
@@ -79,7 +79,7 @@ export default function HomePage() {
             typeof item?.content === 'string',
         )
         .map((item, idx) => ({
-          id: item?.id || `restored-${idx}`,
+          id: item?.id || `restored-sales-${idx}`,
           role: item.role,
           content: item.content,
         }));
@@ -144,15 +144,15 @@ export default function HomePage() {
   return (
     <main className="shell">
       <section className="panel sidebar">
-        <h1>아리계곡 리뷰 도우미</h1>
-        <p className="subtitle">리뷰를 쉽게 읽고, 중요한 포인트만 빠르게 확인하세요.</p>
+        <h1>아리계곡 매출 도우미</h1>
+        <p className="subtitle">매출 흐름과 비교 포인트를 한눈에 확인하세요.</p>
 
         <div className="card">
-          <h2>매출 분석으로 이동</h2>
-          <a className="switch-btn" href={SALES_CHAT_HREF}>
-            매출 분석 챗봇 열기
+          <h2>리뷰 분석으로 이동</h2>
+          <a className="switch-btn" href={REVIEW_CHAT_URL}>
+            리뷰 분석 챗봇 열기
           </a>
-          <p className="switch-note">리뷰가 아닌 매출 질문은 이 버튼으로 이동해서 물어보세요.</p>
+          <p className="switch-note">고객 반응과 불만 패턴이 궁금하면 리뷰 분석으로 이동하세요.</p>
         </div>
 
         <div className="card">
@@ -173,7 +173,7 @@ export default function HomePage() {
       <section className="panel chatbox">
         <header className="chat-header">
           <div>
-            <strong>리뷰 상담</strong>
+            <strong>매출 상담</strong>
             <p>{statusText}</p>
           </div>
           <div className="header-actions">
@@ -243,7 +243,7 @@ export default function HomePage() {
           <textarea
             name="prompt"
             rows={3}
-            placeholder="예: 최근 리뷰에서 반복적으로 아쉬운 점을 알려줘"
+            placeholder="예: 이번 달 지점별 매출 순위를 알려줘"
             value={input}
             onChange={handleInputChange}
             onKeyDown={submitByKeyboard}

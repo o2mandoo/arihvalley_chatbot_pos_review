@@ -1,5 +1,7 @@
 import { resolveBackendConfig } from '@/lib/backend-url';
 
+const SALES_FORCE_PREFIX = '매출 분석 질문: ';
+
 function toTextChunks(text, chunkSize = 30, delayMs = 10) {
   const encoder = new TextEncoder();
   let offset = 0;
@@ -39,7 +41,7 @@ export async function POST(req) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: latestUser.content,
+        message: `${SALES_FORCE_PREFIX}${latestUser.content}`,
         history: messages,
       }),
       cache: 'no-store',

@@ -28,6 +28,7 @@ npm run dev
    - `REVIEW_BACKEND_URL_PRODUCTION=https://<production-backend-domain>`
    - (선택) `REVIEW_BACKEND_URL` : fallback 용도
    - (선택) `NEXT_PUBLIC_SALES_CHAT_URL=https://<sales-chatbot-url>`
+   - (선택) `NEXT_PUBLIC_REVIEW_CHAT_URL=https://<review-chat-url>`
 3. 각 변수에 환경 지정:
    - `REVIEW_BACKEND_URL_PREVIEW` -> Preview
    - `REVIEW_BACKEND_URL_PRODUCTION` -> Production
@@ -42,6 +43,13 @@ vercel env add REVIEW_BACKEND_URL_PRODUCTION production
 
 프론트는 `/api/chat` 라우트에서 환경에 맞는 백엔드를 호출합니다.
 따라서 브라우저에 백엔드 URL을 노출하지 않아도 됩니다.
+
+## 페이지 구성
+
+- 리뷰 분석: `/`
+- 매출 분석: `/sales`
+- 매출 페이지는 `/api/sales-chat` 경로를 통해 백엔드 `/api/chat`을 호출합니다.
+- 현재 백엔드 매출 엔진은 placeholder 상태이므로, 매출 상세 분석은 추후 백엔드 확장이 필요합니다.
 
 ## 분기 규칙
 

@@ -120,6 +120,7 @@ Notes:
 
 - Uses `ai` package (`@vercel/ai`) `useChat` hook.
 - Markdown rendering: `react-markdown` + `remark-gfm`.
+- Review page: `/`, Sales page: `/sales`
 - Next route `/api/chat` resolves backend URL by environment:
   - `production` -> `REVIEW_BACKEND_URL_PRODUCTION`
   - `preview` -> `REVIEW_BACKEND_URL_PREVIEW`
