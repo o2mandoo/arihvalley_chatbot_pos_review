@@ -5,6 +5,7 @@ import { useChat } from 'ai/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import AnimatedNavLink from './components/animated-nav-link';
+import LiveThinking from './components/live-thinking';
 import MessageChart from './components/message-chart';
 
 const CHAT_STORAGE_KEY = 'review-analyst:messages:v2';
@@ -149,6 +150,7 @@ export default function HomePage() {
   const messagesEndRef = useRef(null);
   const messagesRef = useRef(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const scrollThreshold = 180;
 
   const {
     messages,
@@ -172,25 +174,31 @@ export default function HomePage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
+  const updateScrollTopVisibility = () => {
+    const element = messagesRef.current;
+    const messageScrollTop = element?.scrollTop ?? 0;
+    const pageScrollTop =
+      window.scrollY || document.documentElement?.scrollTop || document.body?.scrollTop || 0;
+    setShowScrollTop(messageScrollTop > scrollThreshold || pageScrollTop > scrollThreshold);
+  };
+
   useEffect(() => {
     const element = messagesRef.current;
-    if (!element) return undefined;
+    updateScrollTopVisibility();
 
-    const onScroll = () => {
-      setShowScrollTop(element.scrollTop > 260);
-    };
+    const onMessageScroll = () => updateScrollTopVisibility();
+    const onWindowScroll = () => updateScrollTopVisibility();
 
-    onScroll();
-    element.addEventListener('scroll', onScroll, { passive: true });
+    element?.addEventListener('scroll', onMessageScroll, { passive: true });
+    window.addEventListener('scroll', onWindowScroll, { passive: true });
     return () => {
-      element.removeEventListener('scroll', onScroll);
+      element?.removeEventListener('scroll', onMessageScroll);
+      window.removeEventListener('scroll', onWindowScroll);
     };
   }, []);
 
   useEffect(() => {
-    const element = messagesRef.current;
-    if (!element) return;
-    setShowScrollTop(element.scrollTop > 260);
+    updateScrollTopVisibility();
   }, [messages, isLoading]);
 
   useEffect(() => {
@@ -272,8 +280,10 @@ export default function HomePage() {
 
   const scrollToTop = () => {
     const element = messagesRef.current;
-    if (!element) return;
-    element.scrollTo({ top: 0, behavior: 'smooth' });
+    if (element) {
+      element.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   return (
@@ -375,7 +385,7 @@ export default function HomePage() {
                 />
                 <span className="bubble-role">아리계곡 봇</span>
               </span>
-              <p>답변을 작성하고 있어요...</p>
+              <LiveThinking mode="review" />
             </article>
           )}
 

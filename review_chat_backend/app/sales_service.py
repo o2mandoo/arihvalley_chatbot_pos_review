@@ -841,6 +841,8 @@ Rules:
         if spec is None:
             spec = self._build_chart_spec_from_period(question, query_result)
         if spec is None:
+            spec = self._build_chart_spec_from_default(question, query_result)
+        if spec is None:
             return ""
         return "```chart\n" + json.dumps(spec, ensure_ascii=False) + "\n```"
 
@@ -964,6 +966,93 @@ Rules:
             subtitle="응답 기간을 일 단위로 시각화했습니다.",
         )
 
+    def _build_chart_spec_from_default(self, question: str, query_result: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        period_scope = self._extract_period_scope(question)
+        days = self._extract_recent_days(question)
+        if days is None and self._has_recent_hint(question):
+            days = 14
+        if days is None:
+            days = self._infer_days_from_result_range(query_result)
+        if days is None:
+            days = 14
+        days = max(2, min(int(days), 60))
+
+        if self._is_day_ranking_intent(question):
+            rank_df = self._fetch_ranked_sales_days_for_chart(
+                days=days if period_scope is None else None,
+                period_scope=period_scope,
+                descending=not self._is_day_low_ranking_intent(question),
+                limit=7,
+            )
+            if len(rank_df) >= 2:
+                title = f"{period_scope.label} 매출 상위 일자" if period_scope is not None else f"최근 {days}일 매출 상위 일자"
+                return self._build_ranked_sales_chart_spec(rank_df, title=title)
+
+        trend_df = self._fetch_daily_sales_trend_for_chart(
+            days=days if period_scope is None else None,
+            period_scope=period_scope,
+        )
+        if len(trend_df) >= 2:
+            title = f"{period_scope.label} 일자별 매출 추이" if period_scope is not None else f"최근 {days}일 일자별 매출 추이"
+            return self._build_daily_sales_chart_spec(
+                period_df=trend_df,
+                title=title,
+                subtitle="질문 맥락을 보강하는 보조 시각화입니다.",
+            )
+
+        return None
+
+    def _fetch_daily_sales_trend_for_chart(
+        self,
+        days: Optional[int] = None,
+        period_scope: Optional[SalesPeriodScope] = None,
+    ) -> pd.DataFrame:
+        safe_days = max(2, min(int(days or 14), 60))
+        sql = self._daily_sales_trend_sql(days=safe_days, period_scope=period_scope)
+        return self.data_store.query(sql)
+
+    def _fetch_ranked_sales_days_for_chart(
+        self,
+        days: Optional[int],
+        period_scope: Optional[SalesPeriodScope],
+        descending: bool,
+        limit: int,
+    ) -> pd.DataFrame:
+        safe_limit = max(2, min(int(limit), 14))
+        sql = self._day_sales_ranking_sql(
+            days=days,
+            descending=descending,
+            limit=safe_limit,
+            period_scope=period_scope,
+        )
+        return self.data_store.query(sql)
+
+    def _build_ranked_sales_chart_spec(self, ranked_df: pd.DataFrame, title: str) -> Optional[Dict[str, Any]]:
+        if len(ranked_df) < 2:
+            return None
+        work = ranked_df.copy()
+        work = work.sort_values(by=["total_sales", "sales_date"], ascending=[False, True]).head(7)
+
+        data: List[Dict[str, Any]] = []
+        for _, row in work.iterrows():
+            date_text = self._format_date(row.get("sales_date"))
+            if not date_text:
+                continue
+            total_sales = self._to_float(row.get("total_sales"))
+            data.append({"x": date_text, "total_sales": total_sales})
+
+        if len(data) < 2:
+            return None
+
+        return {
+            "chartType": "bar",
+            "title": title,
+            "subtitle": "상위 매출 일자를 비교했습니다.",
+            "xKey": "x",
+            "series": [{"key": "total_sales", "label": "일매출", "format": "currency"}],
+            "data": data,
+        }
+
     def _fetch_daily_sales_chart_by_where(self, where_sql: str) -> pd.DataFrame:
         sql = f"""
 SELECT
@@ -986,7 +1075,7 @@ ORDER BY sales_date ASC
         data = []
         for _, row in period_df.iterrows():
             date_text = self._format_date(row["sales_date"])
-            total_sales = float(pd.to_numeric(row["total_sales"], errors="coerce") or 0.0)
+            total_sales = self._to_float(row.get("total_sales"))
             data.append({"x": date_text, "total_sales": total_sales})
 
         return {

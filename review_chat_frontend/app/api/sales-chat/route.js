@@ -2,21 +2,41 @@ import { resolveBackendConfig } from '@/lib/backend-url';
 
 const SALES_FORCE_PREFIX = '매출 분석 질문: ';
 
-function toTextChunks(text, chunkSize = 1, delayMs = 12) {
+const STREAM_OPTIONS = {
+  minChunkSize: 14,
+  maxChunkSize: 28,
+  baseDelayMs: 1,
+  sentencePauseMs: 6,
+};
+
+function toTextChunks(text, options = STREAM_OPTIONS) {
+  const safeText = typeof text === 'string' ? text : '';
   const encoder = new TextEncoder();
   let offset = 0;
+  const range = Math.max(0, options.maxChunkSize - options.minChunkSize);
 
   return new ReadableStream({
     start(controller) {
       const pump = () => {
-        if (offset >= text.length) {
+        if (offset >= safeText.length) {
           controller.close();
           return;
         }
 
-        const next = text.slice(offset, offset + chunkSize);
-        offset += chunkSize;
+        const chunkSize =
+          options.minChunkSize + (range > 0 ? Math.floor(Math.random() * (range + 1)) : 0);
+        const end = Math.min(offset + chunkSize, safeText.length);
+        const next = safeText.slice(offset, end);
+        offset = end;
         controller.enqueue(encoder.encode(next));
+
+        if (offset >= safeText.length) {
+          controller.close();
+          return;
+        }
+
+        const tail = next[next.length - 1] || '';
+        const delayMs = /[.!?。！？\n]/.test(tail) ? options.sentencePauseMs : options.baseDelayMs;
         setTimeout(pump, delayMs);
       };
 

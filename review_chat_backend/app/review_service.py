@@ -1192,6 +1192,8 @@ LIMIT 10
         if spec is None:
             spec = self._build_chart_spec_from_period(question, query_result)
         if spec is None:
+            spec = self._build_chart_spec_from_default(question, query_result, signal_df)
+        if spec is None:
             return ""
         return "```chart\n" + json.dumps(spec, ensure_ascii=False) + "\n```"
 
@@ -1383,6 +1385,132 @@ ORDER BY review_date ASC
             ],
             "data": data[:60],
         }
+
+    def _build_chart_spec_from_default(
+        self,
+        question: str,
+        query_result: pd.DataFrame,
+        signal_df: Optional[pd.DataFrame] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if signal_df is not None:
+            signal_spec = self._build_chart_spec_from_signal_df(signal_df)
+            if signal_spec is not None:
+                return signal_spec
+
+        days = self._extract_recent_days(question)
+        if days is None and self._has_recent_hint(question):
+            days = 14
+        if days is None:
+            days = self._infer_days_from_result_range(query_result)
+        if days is None:
+            days = 14
+        days = max(2, min(int(days), 60))
+
+        where_clause = self._branch_where_clause(question)
+        metric_column, metric_label, metric_filter_sql = self._resolve_chart_metric(question, query_result)
+
+        trend_df = self._fetch_review_trend_for_chart(
+            where_clause=where_clause,
+            metric_column=metric_column,
+            metric_filter_sql=metric_filter_sql,
+            days=days,
+        )
+        if len(trend_df) < 2:
+            return None
+
+        data: List[Dict[str, Any]] = []
+        for _, row in trend_df.iterrows():
+            date_text = self._format_date(row.get("review_date"))
+            if not date_text:
+                continue
+            value = pd.to_numeric(row.get(metric_column), errors="coerce")
+            if pd.isna(value):
+                value = 0.0
+            data.append({"x": date_text, metric_column: float(value)})
+
+        if len(data) < 2:
+            return None
+
+        return {
+            "chartType": "line",
+            "title": f"최근 {days}일 {metric_label} 추이",
+            "subtitle": "질문 맥락을 보강하는 보조 시각화입니다.",
+            "xKey": "x",
+            "series": [{"key": metric_column, "label": metric_label, "format": "count"}],
+            "data": data[:60],
+        }
+
+    def _resolve_chart_metric(self, question: str, query_result: pd.DataFrame) -> Tuple[str, str, str]:
+        lowered = question.lower()
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+
+        waiting_col = self._find_column_name(lookup, ("waiting_review_count", "waiting_count"))
+        negative_col = self._find_column_name(lookup, ("negative_review_count",))
+
+        if waiting_col is not None or any(token in lowered for token in ("웨이팅", "대기", "기다", "줄")):
+            return (
+                "waiting_review_count",
+                "웨이팅 리뷰 건수",
+                f"AND regexp_matches(s.review_content, '{WAITING_SQL_REGEX}', 'i')",
+            )
+        if negative_col is not None or any(token in lowered for token in ("부정", "불만", "아쉬", "문제", "불편")):
+            return (
+                "negative_review_count",
+                "부정 리뷰 건수",
+                f"AND regexp_matches(s.review_content, '{NEGATIVE_ANY_SQL_REGEX}', 'i')",
+            )
+        return "review_count", "리뷰 건수", ""
+
+    def _fetch_review_trend_for_chart(
+        self,
+        where_clause: str,
+        metric_column: str,
+        metric_filter_sql: str,
+        days: int,
+    ) -> pd.DataFrame:
+        lookback = max(1, int(days) - 1)
+        sql = f"""
+WITH scoped AS (
+  SELECT * FROM reviews
+  WHERE {where_clause}
+    AND review_date IS NOT NULL
+),
+latest AS (
+  SELECT MAX(review_date) AS max_date FROM scoped
+)
+SELECT
+  s.review_date,
+  COUNT(*) AS {metric_column}
+FROM scoped s
+CROSS JOIN latest l
+WHERE l.max_date IS NOT NULL
+  AND s.review_date >= l.max_date - INTERVAL {lookback} DAY
+  AND s.review_date <= l.max_date
+  {metric_filter_sql}
+GROUP BY s.review_date
+ORDER BY s.review_date ASC
+""".strip()
+        return self.data_store.query(sql)
+
+    @staticmethod
+    def _infer_days_from_result_range(query_result: pd.DataFrame) -> Optional[int]:
+        if len(query_result) == 0:
+            return None
+        lookup = {str(column).strip().lower(): column for column in query_result.columns}
+        start_col = ReviewAnalysisService._find_column_name(lookup, ("start_date",))
+        end_col = ReviewAnalysisService._find_column_name(lookup, ("end_date",))
+        if start_col is None or end_col is None:
+            return None
+
+        start = pd.to_datetime(query_result.iloc[0][start_col], errors="coerce")
+        end = pd.to_datetime(query_result.iloc[0][end_col], errors="coerce")
+        if pd.isna(start) or pd.isna(end):
+            return None
+
+        delta_days = int((end - start).days) + 1
+        if delta_days <= 0:
+            return None
+        return min(delta_days, 365)
 
     def _format_chart_x_value(self, x_col: object, value: Any) -> str:
         normalized = str(x_col).strip().lower()
