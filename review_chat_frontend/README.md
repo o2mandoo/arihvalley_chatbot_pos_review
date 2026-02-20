@@ -49,7 +49,7 @@ vercel env add REVIEW_BACKEND_URL_PRODUCTION production
 - 리뷰 분석: `/`
 - 매출 분석: `/sales`
 - 매출 페이지는 `/api/sales-chat` 경로를 통해 백엔드 `/api/chat`을 호출합니다.
-- 현재 백엔드 매출 엔진은 placeholder 상태이므로, 매출 상세 분석은 추후 백엔드 확장이 필요합니다.
+- 매출 소스 확인/재로딩: `/api/sales-source` (백엔드 `/api/sales/source` 프록시)
 
 ## 분기 규칙
 

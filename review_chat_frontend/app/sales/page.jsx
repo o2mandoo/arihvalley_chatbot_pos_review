@@ -12,18 +12,19 @@ const INITIAL_ASSISTANT_MESSAGE = {
   id: 'welcome-sales',
   role: 'assistant',
   content:
-    '## 안녕하세요\n\n매출 흐름을 보기 쉽게 정리해드릴게요. 궁금한 내용을 편하게 질문해 주세요.',
+    '## 안녕하세요\n\n아리계곡 매출 리포트를 기준으로 매출 흐름을 빠르게 분석해드릴게요. 궁금한 내용을 편하게 질문해 주세요.',
 };
 
 const QUICK_PROMPTS = [
-  '이번 달 일자별 매출 추이를 표로 보여줘',
-  '전월 대비 매출 증감률을 알려줘',
-  '지점별 매출 순위를 비교해줘',
+  '최근 7일 총매출과 주문 건수를 알려줘',
+  '최근 14일 일자별 매출 추이를 표로 보여줘',
+  '전월 대비 이번달 매출 변화를 알려줘',
+  '주문채널별 매출 비중을 알려줘',
   '객단가가 높은 시간대를 찾아줘',
 ];
 
 const NEGATIVE_HIGHLIGHT_REGEX =
-  /(웨이팅|대기|기다리|시끄럽|복잡|혼잡|늦|느리|오래\s*걸|불친절|별로|아쉽|좁|자리\s*없|비싸|가성비\s*별로|짜|싱겁|물리)/gi;
+  /(웨이팅|대기|기다리|시끄럽|복잡|혼잡|늦|느리|오래\s*걸|불친절|별로|아쉽|좁|자리\s*없|비싸|가성비\s*별로|짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\s*이?\s*(세|쎄)|염도\s*(높|세|쎄)|싱겁|물리)/gi;
 
 function stripLegacyHighlightTags(content) {
   return content
@@ -223,15 +224,20 @@ export default function SalesPage() {
   return (
     <main className="shell">
       <section className="panel sidebar">
-        <h1>아리계곡 매출 도우미</h1>
-        <p className="subtitle">매출 흐름과 비교 포인트를 한눈에 확인하세요.</p>
+        <div className="brand-title-wrap">
+          <img
+            className="brand-title-image"
+            src="/assets/ari-title.avif"
+            alt="아리계곡"
+          />
+        </div>
+        <h1 className="visually-hidden">아리계곡 매출 도우미</h1>
 
         <div className="card">
           <h2>리뷰 분석으로 이동</h2>
           <a className="switch-btn" href={REVIEW_CHAT_URL}>
             리뷰 분석 챗봇 열기
           </a>
-          <p className="switch-note">고객 반응과 불만 패턴이 궁금하면 리뷰 분석으로 이동하세요.</p>
         </div>
 
         <div className="card">
@@ -251,9 +257,12 @@ export default function SalesPage() {
 
       <section className="panel chatbox">
         <header className="chat-header">
-          <div>
-            <strong>매출 상담</strong>
-            <p>{statusText}</p>
+          <div className="chat-header-left">
+            <div>
+              <strong>매출 상담</strong>
+              <p>{statusText}</p>
+            </div>
+            <p className="header-source-meta">매출 리포트 소스: 아리계곡 왕십리한양대점 26.02.21 기준</p>
           </div>
           <div className="header-actions">
             {isLoading && (
@@ -274,9 +283,18 @@ export default function SalesPage() {
               className={`bubble ${msg.role === 'user' ? 'user' : 'assistant'}`}
             >
               <div className="bubble-head">
-                <span className="bubble-role">
-                  {msg.role === 'user' ? '나' : '도우미'}
-                </span>
+                {msg.role === 'assistant' ? (
+                  <span className="assistant-id">
+                    <img
+                      className="assistant-avatar"
+                      src="/assets/ari-logo.jpeg"
+                      alt="아리계곡 봇"
+                    />
+                    <span className="bubble-role">아리계곡 봇</span>
+                  </span>
+                ) : (
+                  <span className="bubble-role">나</span>
+                )}
                 {msg.role === 'assistant' && (
                   <button
                     type="button"
@@ -297,14 +315,28 @@ export default function SalesPage() {
 
           {isLoading && (
             <article className="bubble assistant loading">
-              <span className="bubble-role">도우미</span>
+              <span className="assistant-id">
+                <img
+                  className="assistant-avatar"
+                  src="/assets/ari-logo.jpeg"
+                  alt="아리계곡 봇"
+                />
+                <span className="bubble-role">아리계곡 봇</span>
+              </span>
               <p>답변을 작성하고 있어요...</p>
             </article>
           )}
 
           {error && (
             <article className="bubble assistant error">
-              <span className="bubble-role">안내</span>
+              <span className="assistant-id">
+                <img
+                  className="assistant-avatar"
+                  src="/assets/ari-logo.jpeg"
+                  alt="아리계곡 봇"
+                />
+                <span className="bubble-role">아리계곡 봇</span>
+              </span>
               <p>{error.message || '요청 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요.'}</p>
             </article>
           )}
@@ -322,7 +354,7 @@ export default function SalesPage() {
           <textarea
             name="prompt"
             rows={3}
-            placeholder="예: 이번 달 지점별 매출 순위를 알려줘"
+            placeholder="예: 최근 14일 일자별 매출 추이를 알려줘"
             value={input}
             onChange={handleInputChange}
             onKeyDown={submitByKeyboard}

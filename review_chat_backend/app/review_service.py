@@ -38,7 +38,13 @@ Rules:
 - If query may return many rows, include LIMIT 50
 - Use DuckDB-compatible SQL functions only.
 - Do not use array_join. Use string_agg/listagg style aggregation instead.
+- For salty taste complaints, never use a bare `짜` token because it causes false positives
+  (e.g., `진짜`, `짜세`). Use precise patterns like `짰|짠맛|짜요|짜다|간\\s*이?\\s*(세|쎄)`.
 """.strip()
+
+SALTY_TASTE_NEGATIVE_REGEX = (
+    r"짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\s*이?\s*(세|쎄)|염도\s*(높|세|쎄)"
+)
 
 
 NEGATIVE_SIGNAL_PATTERNS: Dict[str, str] = {
@@ -48,7 +54,7 @@ NEGATIVE_SIGNAL_PATTERNS: Dict[str, str] = {
     "서비스 태도": r"불친절|응대\s*별로|서비스\s*별로",
     "공간/좌석": r"좁|자리\s*없|좌석",
     "가격/가성비 불만": r"비싸|가격\s*부담|가성비\s*별로",
-    "맛 디테일 불만": r"짜|싱겁|아쉽|별로|물리",
+    "맛 디테일 불만": rf"{SALTY_TASTE_NEGATIVE_REGEX}|싱겁|아쉽|별로|물리",
 }
 
 POSITIVE_HINT = re.compile(r"맛있|좋|친절|추천|만족|훌륭|재방문", re.IGNORECASE)
@@ -71,7 +77,8 @@ NEGATIVE_ANY_PATTERN = re.compile(
 WAITING_SQL_REGEX = r"웨이팅|대기|기다|줄"
 NEGATIVE_ANY_SQL_REGEX = (
     r"웨이팅|대기|기다리|시끄럽|복잡|혼잡|사람\s*많|늦|느리|오래\s*걸|불친절|응대\s*별로|서비스\s*별로|"
-    r"좁|자리\s*없|좌석|비싸|가격\s*부담|가성비\s*별로|짜|싱겁|아쉽|별로|물리"
+    r"좁|자리\s*없|좌석|비싸|가격\s*부담|가성비\s*별로|짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\s*이?\s*(세|쎄)|"
+    r"염도\s*(높|세|쎄)|싱겁|아쉽|별로|물리"
 )
 
 FORBIDDEN_SQL = re.compile(
@@ -691,7 +698,7 @@ signals(signal, pattern) AS (
     ('서비스 태도', '불친절|응대\\\\s*별로|서비스\\\\s*별로'),
     ('공간/좌석', '좁|자리\\\\s*없|좌석'),
     ('가격/가성비 불만', '비싸|가격\\\\s*부담|가성비\\\\s*별로'),
-    ('맛 디테일 불만', '짜|싱겁|아쉽|별로|물리')
+    ('맛 디테일 불만', '짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\\\\s*이?\\\\s*(세|쎄)|염도\\\\s*(높|세|쎄)|싱겁|아쉽|별로|물리')
 ),
 counts AS (
   SELECT
@@ -1495,7 +1502,22 @@ LIMIT 10
         renamed = {
             column: ReviewAnalysisService._to_korean_column(str(column)) for column in df.columns
         }
-        return df.rename(columns=renamed)
+        localized = df.rename(columns=renamed).copy()
+        date_columns = {
+            "review_date",
+            "start_date",
+            "end_date",
+            "리뷰 일자",
+            "집계 시작일",
+            "집계 종료일",
+        }
+
+        for column in localized.columns:
+            normalized = str(column).strip().lower()
+            if normalized in date_columns or pd.api.types.is_datetime64_any_dtype(localized[column]):
+                localized[column] = localized[column].map(ReviewAnalysisService._format_date)
+
+        return localized
 
     def _mask_sensitive_df(self, df: pd.DataFrame) -> pd.DataFrame:
         if len(df) == 0:

@@ -10,7 +10,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY review_chat_backend /app/review_chat_backend
 RUN mkdir -p /app/review_analysis/data
-COPY review_analysis/data/아리계곡_통합_.csv /app/review_analysis/data/아리계곡_통합_.csv
+COPY review_analysis/data /app/review_analysis/data
+RUN mkdir -p /app/revenue-data
+COPY revenue-data /app/revenue-data
 
 EXPOSE 8000
 

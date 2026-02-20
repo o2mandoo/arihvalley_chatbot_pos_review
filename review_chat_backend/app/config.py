@@ -1,5 +1,6 @@
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -44,6 +45,9 @@ def load_env_from_shell_rc(var_name: str) -> Optional[str]:
 @dataclass(frozen=True)
 class Settings:
     review_csv_path: Path
+    sales_report_path: Optional[Path]
+    sales_excel_password: Optional[str]
+    sales_branch_name: str
     openai_api_key: str
     openai_model: str
     openai_temperature: float
@@ -58,6 +62,8 @@ def get_settings() -> Settings:
         load_env_from_shell_rc("OPENAI_API_KEY")
     if not os.getenv("OPENAI_MODEL"):
         load_env_from_shell_rc("OPENAI_MODEL")
+    if not os.getenv("EXCEL_PASSWORD"):
+        load_env_from_shell_rc("EXCEL_PASSWORD")
 
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not openai_api_key:
@@ -70,6 +76,46 @@ def get_settings() -> Settings:
     if not review_csv_path.exists():
         raise FileNotFoundError(f"Review CSV not found: {review_csv_path}")
 
+    sales_report_name = (
+        os.getenv("SALES_REPORT_FILE", "왕십리_매출리포트-260221.xlsx").strip()
+        or "왕십리_매출리포트-260221.xlsx"
+    )
+    sales_report_path: Optional[Path] = None
+    revenue_dir = project_root / "revenue-data"
+    if revenue_dir.exists():
+        candidates = [
+            path
+            for path in revenue_dir.glob("*.xlsx")
+            if not path.name.startswith("~$")
+        ]
+        normalized_target = unicodedata.normalize("NFC", sales_report_name)
+        matched = [
+            path
+            for path in candidates
+            if unicodedata.normalize("NFC", path.name) == normalized_target
+        ]
+        if matched:
+            sales_report_path = matched[0]
+        else:
+            non_decrypted = [
+                path
+                for path in candidates
+                if "-decrypted" not in unicodedata.normalize("NFC", path.name)
+            ]
+            fallback_pool = non_decrypted or candidates
+            fallback_pool = sorted(
+                fallback_pool,
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            sales_report_path = fallback_pool[0] if fallback_pool else None
+
+    sales_excel_password_raw = os.getenv("EXCEL_PASSWORD", "").strip()
+    if not sales_excel_password_raw:
+        sales_excel_password_raw = "7055"
+    sales_excel_password = sales_excel_password_raw
+    sales_branch_name = os.getenv("SALES_BRANCH_NAME", "왕십리한양대점").strip() or "왕십리한양대점"
+
     openai_model = os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
     try:
         openai_temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.35").strip())
@@ -79,6 +125,9 @@ def get_settings() -> Settings:
 
     return Settings(
         review_csv_path=review_csv_path,
+        sales_report_path=sales_report_path,
+        sales_excel_password=sales_excel_password,
+        sales_branch_name=sales_branch_name,
         openai_api_key=openai_api_key,
         openai_model=openai_model,
         openai_temperature=openai_temperature,

@@ -8,6 +8,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
       OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.35}
+      EXCEL_PASSWORD: ${EXCEL_PASSWORD:-7055}
+      SALES_REPORT_FILE: ${SALES_REPORT_FILE:-왕십리_매출리포트-260221.xlsx}
+      SALES_BRANCH_NAME: ${SALES_BRANCH_NAME:-왕십리한양대점}
     ports:
       - "8000:8000"
     restart: unless-stopped

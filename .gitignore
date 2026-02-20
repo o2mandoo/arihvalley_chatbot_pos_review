@@ -216,3 +216,16 @@ yarn-error.log*
 # Keep frontend runtime helper files tracked
 !review_chat_frontend/lib/
 !review_chat_frontend/lib/backend-url.js
+
+# Local analytics datasets (do not commit)
+review_analysis/data/*.csv
+revenue-data/**/*.xlsx
+revenue-data/**/*.xls
+revenue-data/**/*.csv
+revenue-data/**/*.json
+
+# Keep empty folder structure
+!review_analysis/data/.gitkeep
+!revenue-data/.gitkeep
+!revenue-data/archived/.gitkeep
+!revenue-data/processed/.gitkeep

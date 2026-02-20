@@ -5,14 +5,16 @@ import { useChat } from 'ai/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-const CHAT_STORAGE_KEY = 'review-analyst:messages:v1';
+const CHAT_STORAGE_KEY = 'review-analyst:messages:v2';
 const SALES_CHAT_URL = process.env.NEXT_PUBLIC_SALES_CHAT_URL?.trim();
 const SALES_CHAT_HREF = SALES_CHAT_URL || '/sales';
+const LEGACY_TAGLINE = '리뷰는 쉽게, 포인트만 빠르게! ✨';
+const LEGACY_WELCOME_HINT = '매장 리뷰에서 고객 반응을 쉽게 파악해드릴게요';
 const INITIAL_ASSISTANT_MESSAGE = {
   id: 'welcome',
   role: 'assistant',
   content:
-    '## 안녕하세요\n\n매장 리뷰에서 고객 반응을 쉽게 파악해드릴게요. 궁금한 내용을 편하게 질문해 주세요.',
+    '## 안녕하세요\n\n매장 리뷰에서 중요한 포인트를 정리해드릴게요. 궁금한 내용을 편하게 질문해 주세요.',
 };
 
 const QUICK_PROMPTS = [
@@ -23,7 +25,7 @@ const QUICK_PROMPTS = [
 ];
 
 const NEGATIVE_HIGHLIGHT_REGEX =
-  /(웨이팅|대기|기다리|시끄럽|복잡|혼잡|늦|느리|오래\s*걸|불친절|별로|아쉽|좁|자리\s*없|비싸|가성비\s*별로|짜|싱겁|물리)/gi;
+  /(웨이팅|대기|기다리|시끄럽|복잡|혼잡|늦|느리|오래\s*걸|불친절|별로|아쉽|좁|자리\s*없|비싸|가성비\s*별로|짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\s*이?\s*(세|쎄)|염도\s*(높|세|쎄)|싱겁|물리)/gi;
 
 function stripLegacyHighlightTags(content) {
   return content
@@ -118,6 +120,17 @@ function MarkdownMessage({ content }) {
   );
 }
 
+function normalizeLegacyMessageContent(content) {
+  if (typeof content !== 'string') return '';
+
+  if (content.includes(LEGACY_WELCOME_HINT)) {
+    return INITIAL_ASSISTANT_MESSAGE.content;
+  }
+
+  const trimmed = content.replaceAll(LEGACY_TAGLINE, '').trim();
+  return trimmed || content;
+}
+
 export default function HomePage() {
   const messagesEndRef = useRef(null);
 
@@ -160,7 +173,7 @@ export default function HomePage() {
         .map((item, idx) => ({
           id: item?.id || `restored-${idx}`,
           role: item.role,
-          content: item.content,
+          content: normalizeLegacyMessageContent(item.content),
         }));
 
       if (restored.length > 0) {
@@ -223,15 +236,20 @@ export default function HomePage() {
   return (
     <main className="shell">
       <section className="panel sidebar">
-        <h1>아리계곡 리뷰 도우미</h1>
-        <p className="subtitle">리뷰를 쉽게 읽고, 중요한 포인트만 빠르게 확인하세요.</p>
+        <div className="brand-title-wrap">
+          <img
+            className="brand-title-image"
+            src="/assets/ari-title.avif"
+            alt="아리계곡"
+          />
+        </div>
+        <h1 className="visually-hidden">아리계곡 리뷰 도우미</h1>
 
         <div className="card">
           <h2>매출 분석으로 이동</h2>
           <a className="switch-btn" href={SALES_CHAT_HREF}>
             매출 분석 챗봇 열기
           </a>
-          <p className="switch-note">리뷰가 아닌 매출 질문은 이 버튼으로 이동해서 물어보세요.</p>
         </div>
 
         <div className="card">
@@ -274,9 +292,18 @@ export default function HomePage() {
               className={`bubble ${msg.role === 'user' ? 'user' : 'assistant'}`}
             >
               <div className="bubble-head">
-                <span className="bubble-role">
-                  {msg.role === 'user' ? '나' : '도우미'}
-                </span>
+                {msg.role === 'assistant' ? (
+                  <span className="assistant-id">
+                    <img
+                      className="assistant-avatar"
+                      src="/assets/ari-logo.jpeg"
+                      alt="아리계곡 봇"
+                    />
+                    <span className="bubble-role">아리계곡 봇</span>
+                  </span>
+                ) : (
+                  <span className="bubble-role">나</span>
+                )}
                 {msg.role === 'assistant' && (
                   <button
                     type="button"
@@ -297,14 +324,28 @@ export default function HomePage() {
 
           {isLoading && (
             <article className="bubble assistant loading">
-              <span className="bubble-role">도우미</span>
+              <span className="assistant-id">
+                <img
+                  className="assistant-avatar"
+                  src="/assets/ari-logo.jpeg"
+                  alt="아리계곡 봇"
+                />
+                <span className="bubble-role">아리계곡 봇</span>
+              </span>
               <p>답변을 작성하고 있어요...</p>
             </article>
           )}
 
           {error && (
             <article className="bubble assistant error">
-              <span className="bubble-role">안내</span>
+              <span className="assistant-id">
+                <img
+                  className="assistant-avatar"
+                  src="/assets/ari-logo.jpeg"
+                  alt="아리계곡 봇"
+                />
+                <span className="bubble-role">아리계곡 봇</span>
+              </span>
               <p>{error.message || '요청 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요.'}</p>
             </article>
           )}
