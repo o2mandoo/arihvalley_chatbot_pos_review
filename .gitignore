@@ -212,3 +212,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .next/
+
+# Keep frontend runtime helper files tracked
+!review_chat_frontend/lib/
+!review_chat_frontend/lib/backend-url.js
