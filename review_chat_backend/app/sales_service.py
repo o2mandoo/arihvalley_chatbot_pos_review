@@ -990,7 +990,210 @@ Rules:
         if category_line:
             lines.append(category_line)
 
+        if 7 <= days <= 31 and not self._has_absolute_period_reference(question):
+            lines.extend(self._build_week_over_week_causal_insights())
+
         return lines
+
+    def _build_week_over_week_causal_insights(self) -> List[str]:
+        lines: List[str] = []
+
+        try:
+            weekday_df = self._fetch_weekday_wow_delta()
+        except Exception:
+            weekday_df = pd.DataFrame()
+
+        try:
+            hour_df = self._fetch_hour_wow_delta()
+        except Exception:
+            hour_df = pd.DataFrame()
+
+        if len(weekday_df) > 0:
+            positive = weekday_df[weekday_df["delta_sales"] > 0]
+            negative = weekday_df[weekday_df["delta_sales"] < 0]
+            weekday_parts: List[str] = []
+
+            if len(positive) > 0:
+                top_up = positive.sort_values("delta_sales", ascending=False).iloc[0]
+                weekday_parts.append(
+                    f"증가 기여는 **{self._format_weekday_label(top_up['weekday'])} ({self._format_signed_currency(top_up['delta_sales'])})**"
+                )
+            if len(negative) > 0:
+                top_down = negative.sort_values("delta_sales", ascending=True).iloc[0]
+                weekday_parts.append(
+                    f"감소 기여는 **{self._format_weekday_label(top_down['weekday'])} ({self._format_signed_currency(top_down['delta_sales'])})**"
+                )
+
+            if weekday_parts:
+                lines.append("- 전주 동요일 비교 기준으로 요일 영향은 " + ", ".join(weekday_parts) + "입니다.")
+
+        if len(hour_df) > 0:
+            positive = hour_df[hour_df["delta_sales"] > 0]
+            negative = hour_df[hour_df["delta_sales"] < 0]
+            hour_parts: List[str] = []
+
+            top_down_hour: Optional[int] = None
+            if len(positive) > 0:
+                top_up = positive.sort_values("delta_sales", ascending=False).iloc[0]
+                hour_parts.append(
+                    f"증가 기여는 **{self._format_hour_label(top_up['hour'])} ({self._format_signed_currency(top_up['delta_sales'])})**"
+                )
+            if len(negative) > 0:
+                top_down = negative.sort_values("delta_sales", ascending=True).iloc[0]
+                hour_parts.append(
+                    f"감소 기여는 **{self._format_hour_label(top_down['hour'])} ({self._format_signed_currency(top_down['delta_sales'])})**"
+                )
+                try:
+                    top_down_hour = int(top_down["hour"])
+                except (TypeError, ValueError):
+                    top_down_hour = None
+
+            if hour_parts:
+                lines.append("- 전주 대비 시간대 영향은 " + ", ".join(hour_parts) + "입니다.")
+
+            if top_down_hour is not None:
+                if 17 <= top_down_hour <= 21:
+                    lines.append("- 저녁 피크 시간대 하락이 보여, 해당 시간대 대기/회전 운영 점검이 매출 회복에 유효합니다.")
+                elif 11 <= top_down_hour <= 14:
+                    lines.append("- 점심 핵심 시간대 하락이 보여, 점심 세트/회전 전략 점검이 우선 과제입니다.")
+
+        return lines
+
+    def _fetch_weekday_wow_delta(self) -> pd.DataFrame:
+        sql = """
+WITH scoped AS (
+  SELECT sales_date, net_sales_amount
+  FROM sales
+  WHERE sales_date IS NOT NULL
+),
+latest AS (
+  SELECT MAX(sales_date) AS max_date
+  FROM scoped
+),
+windowed AS (
+  SELECT
+    CASE
+      WHEN s.sales_date >= l.max_date - INTERVAL 6 DAY
+       AND s.sales_date <= l.max_date THEN 'current'
+      WHEN s.sales_date >= l.max_date - INTERVAL 13 DAY
+       AND s.sales_date <= l.max_date - INTERVAL 7 DAY THEN 'previous'
+      ELSE NULL
+    END AS period,
+    CAST(EXTRACT(DOW FROM s.sales_date) AS INTEGER) AS weekday,
+    s.net_sales_amount
+  FROM scoped s
+  CROSS JOIN latest l
+),
+agg AS (
+  SELECT
+    weekday,
+    period,
+    SUM(net_sales_amount) AS total_sales
+  FROM windowed
+  WHERE period IS NOT NULL
+  GROUP BY weekday, period
+),
+pivoted AS (
+  SELECT
+    COALESCE(c.weekday, p.weekday) AS weekday,
+    COALESCE(c.total_sales, 0) AS current_sales,
+    COALESCE(p.total_sales, 0) AS previous_sales
+  FROM (SELECT weekday, total_sales FROM agg WHERE period = 'current') c
+  FULL OUTER JOIN (SELECT weekday, total_sales FROM agg WHERE period = 'previous') p
+    ON c.weekday = p.weekday
+)
+SELECT
+  weekday,
+  current_sales,
+  previous_sales,
+  current_sales - previous_sales AS delta_sales
+FROM pivoted
+ORDER BY ABS(current_sales - previous_sales) DESC
+LIMIT 7
+""".strip()
+        return self.data_store.query(sql)
+
+    def _fetch_hour_wow_delta(self) -> pd.DataFrame:
+        sql = """
+WITH scoped AS (
+  SELECT sales_date, sales_hour, net_sales_amount
+  FROM sales
+  WHERE sales_date IS NOT NULL
+    AND sales_hour IS NOT NULL
+),
+latest AS (
+  SELECT MAX(sales_date) AS max_date
+  FROM scoped
+),
+windowed AS (
+  SELECT
+    CASE
+      WHEN s.sales_date >= l.max_date - INTERVAL 6 DAY
+       AND s.sales_date <= l.max_date THEN 'current'
+      WHEN s.sales_date >= l.max_date - INTERVAL 13 DAY
+       AND s.sales_date <= l.max_date - INTERVAL 7 DAY THEN 'previous'
+      ELSE NULL
+    END AS period,
+    CAST(s.sales_hour AS INTEGER) AS hour,
+    s.net_sales_amount
+  FROM scoped s
+  CROSS JOIN latest l
+),
+agg AS (
+  SELECT
+    hour,
+    period,
+    SUM(net_sales_amount) AS total_sales
+  FROM windowed
+  WHERE period IS NOT NULL
+  GROUP BY hour, period
+),
+pivoted AS (
+  SELECT
+    COALESCE(c.hour, p.hour) AS hour,
+    COALESCE(c.total_sales, 0) AS current_sales,
+    COALESCE(p.total_sales, 0) AS previous_sales
+  FROM (SELECT hour, total_sales FROM agg WHERE period = 'current') c
+  FULL OUTER JOIN (SELECT hour, total_sales FROM agg WHERE period = 'previous') p
+    ON c.hour = p.hour
+)
+SELECT
+  hour,
+  current_sales,
+  previous_sales,
+  current_sales - previous_sales AS delta_sales
+FROM pivoted
+ORDER BY ABS(current_sales - previous_sales) DESC
+LIMIT 8
+""".strip()
+        return self.data_store.query(sql)
+
+    @staticmethod
+    def _format_weekday_label(value: Any) -> str:
+        try:
+            weekday = int(pd.to_numeric(value, errors="coerce"))
+        except (TypeError, ValueError):
+            return str(value)
+        labels = {
+            0: "일요일",
+            1: "월요일",
+            2: "화요일",
+            3: "수요일",
+            4: "목요일",
+            5: "금요일",
+            6: "토요일",
+        }
+        return labels.get(weekday, f"{weekday}요일")
+
+    @staticmethod
+    def _format_hour_label(value: Any) -> str:
+        try:
+            hour = int(pd.to_numeric(value, errors="coerce"))
+        except (TypeError, ValueError):
+            return str(value)
+        if hour < 0 or hour > 23:
+            return f"{hour}시"
+        return f"{hour:02d}시"
 
     def _build_month_bucket_insights(self, query_result: pd.DataFrame) -> List[str]:
         if len(query_result) < 2:
