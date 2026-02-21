@@ -7,6 +7,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   Legend,
   Line,
   LineChart,
@@ -44,6 +45,26 @@ function formatTick(value) {
   if (numeric === null) return String(value ?? '');
   if (Math.abs(numeric) >= 100000000) return `${(numeric / 100000000).toFixed(1)}억`;
   if (Math.abs(numeric) >= 10000) return `${(numeric / 10000).toFixed(1)}만`;
+  return Math.round(numeric).toLocaleString();
+}
+
+function formatTickByFormat(value, format) {
+  const numeric = toNumber(value);
+  if (numeric === null) return String(value ?? '');
+  if (format === 'percent') return `${numeric.toFixed(1)}%`;
+  if (format === 'currency') {
+    if (Math.abs(numeric) >= 100000000) return `${(numeric / 100000000).toFixed(1)}억`;
+    if (Math.abs(numeric) >= 10000) return `${(numeric / 10000).toFixed(1)}만`;
+    return Math.round(numeric).toLocaleString();
+  }
+  return formatTick(numeric);
+}
+
+function formatAssistLabel(value, format) {
+  const numeric = toNumber(value);
+  if (numeric === null) return '';
+  if (format === 'percent') return `${numeric.toFixed(1)}%`;
+  if (format === 'currency') return `${Math.round(numeric).toLocaleString()}원`;
   return Math.round(numeric).toLocaleString();
 }
 
@@ -134,17 +155,78 @@ function CustomTooltip({ active, payload, label, seriesByKey }) {
   );
 }
 
-function renderSeries(spec) {
+function buildAxisPlan(spec) {
+  const stats = spec.series.map((series) => {
+    const maxAbs = spec.data.reduce((maxValue, row) => {
+      const numeric = toNumber(row[series.key]);
+      if (numeric === null) return maxValue;
+      return Math.max(maxValue, Math.abs(numeric));
+    }, 0);
+    return { key: series.key, format: series.format, maxAbs };
+  });
+
+  const meaningful = stats.filter((item) => item.maxAbs > 0);
+  const maxAbs = meaningful.length ? Math.max(...meaningful.map((item) => item.maxAbs)) : 0;
+  const minAbs = meaningful.length ? Math.min(...meaningful.map((item) => item.maxAbs)) : 0;
+  const scaleGap = minAbs > 0 ? maxAbs / minAbs : 1;
+  const hasPercent = stats.some((item) => item.format === 'percent');
+  const hasNonPercent = stats.some((item) => item.format !== 'percent');
+
+  let useDualAxis = false;
+  const rightKeys = new Set();
+  if (stats.length >= 2 && ((hasPercent && hasNonPercent) || scaleGap >= 8)) {
+    useDualAxis = true;
+    if (hasPercent && hasNonPercent) {
+      for (const item of stats) {
+        if (item.format === 'percent') rightKeys.add(item.key);
+      }
+    } else {
+      const sorted = [...stats].sort((a, b) => a.maxAbs - b.maxAbs);
+      if (sorted.length > 0) {
+        rightKeys.add(sorted[0].key);
+      }
+    }
+  }
+
+  const axisByKey = {};
+  for (const series of spec.series) {
+    axisByKey[series.key] = useDualAxis && rightKeys.has(series.key) ? 'right' : 'left';
+  }
+
+  const leftSeries = spec.series.find((series) => axisByKey[series.key] === 'left') || spec.series[0];
+  const rightSeries = spec.series.find((series) => axisByKey[series.key] === 'right') || null;
+  return {
+    useDualAxis,
+    axisByKey,
+    leftFormat: leftSeries?.format || 'number',
+    rightFormat: rightSeries?.format || leftSeries?.format || 'number',
+    leftLabel: leftSeries?.label || '지표',
+    rightLabel: rightSeries?.label || '',
+  };
+}
+
+function renderSeries(spec, axisPlan, showAssistLabels) {
   if (spec.chartType === 'bar') {
     return spec.series.map((series) => (
       <Bar
         key={series.key}
         dataKey={series.key}
+        yAxisId={axisPlan.axisByKey[series.key]}
         name={series.label}
         fill={series.color}
         radius={[8, 8, 0, 0]}
         maxBarSize={34}
-      />
+      >
+        {showAssistLabels ? (
+          <LabelList
+            dataKey={series.key}
+            position="top"
+            fill="rgba(226, 232, 240, 0.92)"
+            fontSize={11}
+            formatter={(value) => formatAssistLabel(value, series.format)}
+          />
+        ) : null}
+      </Bar>
     ));
   }
 
@@ -154,12 +236,23 @@ function renderSeries(spec) {
         key={series.key}
         type="monotone"
         dataKey={series.key}
+        yAxisId={axisPlan.axisByKey[series.key]}
         name={series.label}
         stroke={series.color}
         fill={`url(#chart-grad-${idx})`}
         fillOpacity={1}
         strokeWidth={2.4}
-      />
+      >
+        {showAssistLabels ? (
+          <LabelList
+            dataKey={series.key}
+            position="top"
+            fill="rgba(226, 232, 240, 0.92)"
+            fontSize={11}
+            formatter={(value) => formatAssistLabel(value, series.format)}
+          />
+        ) : null}
+      </Area>
     ));
   }
 
@@ -168,12 +261,23 @@ function renderSeries(spec) {
       key={series.key}
       type="monotone"
       dataKey={series.key}
+      yAxisId={axisPlan.axisByKey[series.key]}
       name={series.label}
       stroke={series.color}
       strokeWidth={2.4}
       dot={{ r: 2.4 }}
       activeDot={{ r: 5 }}
-    />
+    >
+      {showAssistLabels ? (
+        <LabelList
+          dataKey={series.key}
+          position="top"
+          fill="rgba(226, 232, 240, 0.92)"
+          fontSize={11}
+          formatter={(value) => formatAssistLabel(value, series.format)}
+        />
+      ) : null}
+    </Line>
   ));
 }
 
@@ -185,7 +289,8 @@ export default function MessageChart({ raw }) {
   }
 
   const seriesByKey = Object.fromEntries(spec.series.map((series) => [series.key, series]));
-  const firstSeries = spec.series[0];
+  const axisPlan = buildAxisPlan(spec);
+  const showAssistLabels = axisPlan.useDualAxis || spec.data.length <= 10;
 
   const commonProps = {
     data: spec.data,
@@ -204,13 +309,25 @@ export default function MessageChart({ raw }) {
             <BarChart {...commonProps}>
               <CartesianGrid stroke="rgba(148, 163, 184, 0.24)" strokeDasharray="3 3" />
               <XAxis dataKey={spec.xKey} tick={{ fill: '#cbd5e1', fontSize: 12 }} />
-              <YAxis tick={{ fill: '#cbd5e1', fontSize: 12 }} tickFormatter={formatTick} />
+              <YAxis
+                yAxisId="left"
+                tick={{ fill: '#cbd5e1', fontSize: 12 }}
+                tickFormatter={(value) => formatTickByFormat(value, axisPlan.leftFormat)}
+              />
+              {axisPlan.useDualAxis ? (
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fill: '#f1f5f9', fontSize: 12 }}
+                  tickFormatter={(value) => formatTickByFormat(value, axisPlan.rightFormat)}
+                />
+              ) : null}
               <Tooltip
                 content={(props) => <CustomTooltip {...props} seriesByKey={seriesByKey} />}
                 cursor={{ fill: 'rgba(56, 189, 248, 0.08)' }}
               />
               <Legend wrapperStyle={{ color: '#e2e8f0', fontSize: 12 }} />
-              {renderSeries(spec)}
+              {renderSeries(spec, axisPlan, showAssistLabels)}
             </BarChart>
           ) : spec.chartType === 'area' ? (
             <AreaChart {...commonProps}>
@@ -224,30 +341,58 @@ export default function MessageChart({ raw }) {
               </defs>
               <CartesianGrid stroke="rgba(148, 163, 184, 0.24)" strokeDasharray="3 3" />
               <XAxis dataKey={spec.xKey} tick={{ fill: '#cbd5e1', fontSize: 12 }} />
-              <YAxis tick={{ fill: '#cbd5e1', fontSize: 12 }} tickFormatter={formatTick} />
+              <YAxis
+                yAxisId="left"
+                tick={{ fill: '#cbd5e1', fontSize: 12 }}
+                tickFormatter={(value) => formatTickByFormat(value, axisPlan.leftFormat)}
+              />
+              {axisPlan.useDualAxis ? (
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fill: '#f1f5f9', fontSize: 12 }}
+                  tickFormatter={(value) => formatTickByFormat(value, axisPlan.rightFormat)}
+                />
+              ) : null}
               <Tooltip
                 content={(props) => <CustomTooltip {...props} seriesByKey={seriesByKey} />}
                 cursor={{ stroke: 'rgba(148, 163, 184, 0.5)' }}
               />
               <Legend wrapperStyle={{ color: '#e2e8f0', fontSize: 12 }} />
-              {renderSeries(spec)}
+              {renderSeries(spec, axisPlan, showAssistLabels)}
             </AreaChart>
           ) : (
             <LineChart {...commonProps}>
               <CartesianGrid stroke="rgba(148, 163, 184, 0.24)" strokeDasharray="3 3" />
               <XAxis dataKey={spec.xKey} tick={{ fill: '#cbd5e1', fontSize: 12 }} />
-              <YAxis tick={{ fill: '#cbd5e1', fontSize: 12 }} tickFormatter={formatTick} />
+              <YAxis
+                yAxisId="left"
+                tick={{ fill: '#cbd5e1', fontSize: 12 }}
+                tickFormatter={(value) => formatTickByFormat(value, axisPlan.leftFormat)}
+              />
+              {axisPlan.useDualAxis ? (
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fill: '#f1f5f9', fontSize: 12 }}
+                  tickFormatter={(value) => formatTickByFormat(value, axisPlan.rightFormat)}
+                />
+              ) : null}
               <Tooltip
                 content={(props) => <CustomTooltip {...props} seriesByKey={seriesByKey} />}
                 cursor={{ stroke: 'rgba(148, 163, 184, 0.5)' }}
               />
               <Legend wrapperStyle={{ color: '#e2e8f0', fontSize: 12 }} />
-              {renderSeries(spec)}
+              {renderSeries(spec, axisPlan, showAssistLabels)}
             </LineChart>
           )}
         </ResponsiveContainer>
       </div>
-      <div className="chart-unit">기준 지표: {firstSeries?.label || '값'} </div>
+      <div className="chart-unit">
+        {axisPlan.useDualAxis
+          ? `좌축: ${axisPlan.leftLabel} · 우축: ${axisPlan.rightLabel}`
+          : `기준 지표: ${axisPlan.leftLabel}`}
+      </div>
     </section>
   );
 }

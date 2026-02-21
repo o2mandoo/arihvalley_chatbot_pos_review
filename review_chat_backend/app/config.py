@@ -118,9 +118,9 @@ def get_settings() -> Settings:
 
     openai_model = os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
     try:
-        openai_temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.35").strip())
+        openai_temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.45").strip())
     except ValueError:
-        openai_temperature = 0.35
+        openai_temperature = 0.45
     openai_temperature = max(0.0, min(openai_temperature, 1.0))
 
     return Settings(

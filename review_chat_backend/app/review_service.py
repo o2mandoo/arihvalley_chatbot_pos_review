@@ -43,7 +43,17 @@ Rules:
 """.strip()
 
 SALTY_TASTE_NEGATIVE_REGEX = (
-    r"짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\s*이?\s*(세|쎄)|염도\s*(높|세|쎄)"
+    r"짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\s*이?\s*(?:세|쎄)|염도\s*(?:높|세|쎄)"
+)
+
+# Treat suffix usages like `가격대별로`, `지점별로` as non-negative.
+BYEOLRO_NEGATIVE_REGEX = (
+    r"(?:맛|음식|메뉴|서비스|응대|분위기|가격|가성비|청결|위생|양|좌석|자리|공간|소음)\s*(?:이|가|은|는)?\s*별로"
+    r"|별로(?:였|예|네|다|라|야|인|이고|긴|같|함|합니다|했)"
+    r"|(?:^|\s)별로(?:[\s.!?,~]|$)"
+)
+TASTE_BYEOLRO_NEGATIVE_REGEX = (
+    r"(?:맛|음식|메뉴|간|양념|국물)\s*(?:이|가|은|는)?\s*별로"
 )
 
 
@@ -54,11 +64,23 @@ NEGATIVE_SIGNAL_PATTERNS: Dict[str, str] = {
     "서비스 태도": r"불친절|응대\s*별로|서비스\s*별로",
     "공간/좌석": r"좁|자리\s*없|좌석",
     "가격/가성비 불만": r"비싸|가격\s*부담|가성비\s*별로",
-    "맛 디테일 불만": rf"{SALTY_TASTE_NEGATIVE_REGEX}|싱겁|아쉽|별로|물리",
+    "맛 디테일 불만": rf"{SALTY_TASTE_NEGATIVE_REGEX}|싱겁|아쉽|{TASTE_BYEOLRO_NEGATIVE_REGEX}|물리",
 }
 
+REVISIT_KEYWORD_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    ("재방문", r"재방문"),
+    ("또 방문/또 갈게요", r"또\s*(?:방문|갈|가|오)"),
+    ("다시 방문/다시 올게요", r"다시\s*(?:방문|올|오)"),
+    ("단골/자주 방문", r"단골|자주\s*오"),
+    ("N차 방문", r"(?:\d+\s*차\s*방문|n\s*차\s*방문)"),
+)
+REVISIT_ANY_SQL_REGEX = "|".join(f"(?:{pattern})" for _, pattern in REVISIT_KEYWORD_PATTERNS)
+
 POSITIVE_HINT = re.compile(r"맛있|좋|친절|추천|만족|훌륭|재방문", re.IGNORECASE)
-NEGATIVE_HINT = re.compile(r"근데|하지만|다만|아쉽|별로|시끄럽|웨이팅|좁|불친절|늦", re.IGNORECASE)
+NEGATIVE_HINT = re.compile(
+    rf"근데|하지만|다만|아쉽|{BYEOLRO_NEGATIVE_REGEX}|시끄럽|웨이팅|좁|불친절|늦",
+    re.IGNORECASE,
+)
 REVISIT_INTENT_HINT = re.compile(
     r"재방문|또\s*갈|또\s*오|다시\s*방문|다시\s*올|또\s*방문",
     re.IGNORECASE,
@@ -75,10 +97,11 @@ NEGATIVE_ANY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 WAITING_SQL_REGEX = r"웨이팅|대기|기다|줄"
+NEGATIVE_HINT_SQL_REGEX = rf"근데|하지만|다만|아쉽|{BYEOLRO_NEGATIVE_REGEX}|시끄럽|웨이팅|좁|불친절|늦"
 NEGATIVE_ANY_SQL_REGEX = (
     r"웨이팅|대기|기다리|시끄럽|복잡|혼잡|사람\s*많|늦|느리|오래\s*걸|불친절|응대\s*별로|서비스\s*별로|"
-    r"좁|자리\s*없|좌석|비싸|가격\s*부담|가성비\s*별로|짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\s*이?\s*(세|쎄)|"
-    r"염도\s*(높|세|쎄)|싱겁|아쉽|별로|물리"
+    r"좁|자리\s*없|좌석|비싸|가격\s*부담|가성비\s*별로|짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\s*이?\s*(?:세|쎄)|"
+    rf"염도\s*(?:높|세|쎄)|싱겁|아쉽|{BYEOLRO_NEGATIVE_REGEX}|물리"
 )
 
 FORBIDDEN_SQL = re.compile(
@@ -113,7 +136,8 @@ class ReviewAnalysisService:
         self.client = OpenAI(api_key=openai_api_key)
         self.model = openai_model
         self.openai_temperature = max(0.0, min(float(openai_temperature), 1.0))
-        self.answer_variation_temperature = min(1.0, self.openai_temperature * 2.0 + 0.1)
+        self.sql_generation_temperature = min(0.35, self.openai_temperature)
+        self.answer_variation_temperature = min(1.0, max(0.78, self.openai_temperature * 2.4 + 0.2))
         self._rng = random.SystemRandom()
         self.max_sql_rows = max_sql_rows
         self.max_table_rows = max_table_rows
@@ -171,6 +195,9 @@ class ReviewAnalysisService:
         q = question.lower()
         where_clause = self._branch_where_clause(question)
 
+        if self._is_revisit_keyword_intent(question):
+            return self._revisit_keyword_sql("1=1")
+
         metric_sql = self._metric_template_sql(question, where_clause)
         if metric_sql:
             return metric_sql
@@ -189,7 +216,7 @@ target AS (
     review_content
   FROM scoped
   WHERE regexp_matches(review_content, '맛있|좋|친절|추천|만족|훌륭|재방문', 'i')
-    AND regexp_matches(review_content, '근데|하지만|다만|아쉽|별로|시끄럽|웨이팅|좁|불친절|늦', 'i')
+    AND regexp_matches(review_content, '{NEGATIVE_HINT_SQL_REGEX}', 'i')
 )
 SELECT *
 FROM target
@@ -229,7 +256,7 @@ SELECT
 FROM waiting
 ORDER BY review_date DESC
 LIMIT 8
-""".strip()
+	""".strip()
 
         return ""
 
@@ -684,6 +711,19 @@ LIMIT 20
         return repeat_and_negative or negative_and_signal
 
     @staticmethod
+    def _is_revisit_keyword_intent(question: str) -> bool:
+        normalized = question.replace(" ", "").lower()
+        has_revisit = any(
+            token in normalized
+            for token in ("재방문", "또갈", "또올", "다시방문", "다시오", "단골", "n차방문", "재방문의사")
+        )
+        has_keyword_context = any(
+            token in normalized
+            for token in ("키워드", "표현", "문구", "어떤", "무슨", "패턴", "비율", "지점별", "매장별")
+        )
+        return has_revisit and has_keyword_context
+
+    @staticmethod
     def _negative_signal_sql(where_clause: str) -> str:
         return f"""
 WITH scoped AS (
@@ -698,7 +738,7 @@ signals(signal, pattern) AS (
     ('서비스 태도', '불친절|응대\\\\s*별로|서비스\\\\s*별로'),
     ('공간/좌석', '좁|자리\\\\s*없|좌석'),
     ('가격/가성비 불만', '비싸|가격\\\\s*부담|가성비\\\\s*별로'),
-    ('맛 디테일 불만', '짰|짠맛|짜요|짜다|짜네|짜서|짜고|간\\\\s*이?\\\\s*(세|쎄)|염도\\\\s*(높|세|쎄)|싱겁|아쉽|별로|물리')
+    ('맛 디테일 불만', '{SALTY_TASTE_NEGATIVE_REGEX}|싱겁|아쉽|{TASTE_BYEOLRO_NEGATIVE_REGEX}|물리')
 ),
 counts AS (
   SELECT
@@ -715,6 +755,116 @@ SELECT
 FROM counts
 ORDER BY mention_count DESC
 LIMIT 10
+""".strip()
+
+    @staticmethod
+    def _revisit_keyword_sql(where_clause: str) -> str:
+        keyword_values = ",\n    ".join(
+            f"('{keyword}', '{pattern}')" for keyword, pattern in REVISIT_KEYWORD_PATTERNS
+        )
+        return f"""
+WITH base_reviews AS (
+  SELECT
+    review_id,
+    branch_name,
+    review_content
+  FROM reviews
+  WHERE {where_clause}
+    AND COALESCE(TRIM(review_content), '') <> ''
+),
+patterns(keyword, pattern) AS (
+  VALUES
+    {keyword_values}
+),
+totals AS (
+  SELECT COUNT(*) AS total_reviews FROM base_reviews
+),
+coverage AS (
+  SELECT
+    COUNT(*) AS coverage_review_count
+  FROM base_reviews
+  WHERE regexp_matches(review_content, '{REVISIT_ANY_SQL_REGEX}', 'i')
+),
+overall AS (
+  SELECT
+    '전체' AS scope,
+    '전체' AS branch_name,
+    p.keyword AS keyword,
+    COUNT(*) FILTER (WHERE regexp_matches(b.review_content, p.pattern, 'i')) AS mention_count
+  FROM base_reviews b
+  CROSS JOIN patterns p
+  GROUP BY p.keyword
+),
+branch_keyword AS (
+  SELECT
+    '지점별' AS scope,
+    b.branch_name,
+    p.keyword AS keyword,
+    COUNT(*) FILTER (WHERE regexp_matches(b.review_content, p.pattern, 'i')) AS mention_count
+  FROM base_reviews b
+  CROSS JOIN patterns p
+  GROUP BY b.branch_name, p.keyword
+),
+branch_totals AS (
+  SELECT
+    branch_name,
+    COUNT(*) AS total_reviews
+  FROM base_reviews
+  GROUP BY branch_name
+),
+branch_coverage AS (
+  SELECT
+    branch_name,
+    COUNT(*) AS coverage_review_count
+  FROM base_reviews
+  WHERE regexp_matches(review_content, '{REVISIT_ANY_SQL_REGEX}', 'i')
+  GROUP BY branch_name
+),
+final_rows AS (
+  SELECT
+    o.scope,
+    o.branch_name,
+    o.keyword,
+    o.mention_count,
+    ROUND(100.0 * o.mention_count / NULLIF(t.total_reviews, 0), 1) AS ratio_pct,
+    c.coverage_review_count,
+    ROUND(100.0 * c.coverage_review_count / NULLIF(t.total_reviews, 0), 1) AS coverage_ratio_pct,
+    t.total_reviews
+  FROM overall o
+  CROSS JOIN totals t
+  CROSS JOIN coverage c
+
+  UNION ALL
+
+  SELECT
+    b.scope,
+    b.branch_name,
+    b.keyword,
+    b.mention_count,
+    ROUND(100.0 * b.mention_count / NULLIF(bt.total_reviews, 0), 1) AS ratio_pct,
+    COALESCE(bc.coverage_review_count, 0) AS coverage_review_count,
+    ROUND(100.0 * COALESCE(bc.coverage_review_count, 0) / NULLIF(bt.total_reviews, 0), 1) AS coverage_ratio_pct,
+    bt.total_reviews
+  FROM branch_keyword b
+  JOIN branch_totals bt ON bt.branch_name = b.branch_name
+  LEFT JOIN branch_coverage bc ON bc.branch_name = b.branch_name
+)
+SELECT
+  scope,
+  branch_name,
+  keyword,
+  mention_count,
+  ratio_pct,
+  coverage_review_count,
+  coverage_ratio_pct,
+  total_reviews
+FROM final_rows
+WHERE mention_count > 0
+ORDER BY
+  CASE WHEN scope = '전체' THEN 0 ELSE 1 END,
+  branch_name ASC,
+  mention_count DESC
+LIMIT 200
 """.strip()
 
     def _fallback_sql(self, question: str) -> str:
@@ -745,7 +895,7 @@ LIMIT 10
         user_prompt = f"사용자 질문: {question}"
         response = self.client.chat.completions.create(
             model=self.model,
-            temperature=self.openai_temperature,
+            temperature=self.sql_generation_temperature,
             messages=[
                 {
                     "role": "system",
@@ -886,7 +1036,7 @@ LIMIT 10
             score = 1
             if "근데" in review or "하지만" in review or "다만" in review:
                 score += 1
-            if "아쉽" in review or "별로" in review:
+            if "아쉽" in review or re.search(BYEOLRO_NEGATIVE_REGEX, review, flags=re.IGNORECASE):
                 score += 1
 
             compact = re.sub(r"\s+", " ", review).strip()
@@ -1029,6 +1179,13 @@ LIMIT 10
         scope_label: str,
         scope_df: pd.DataFrame,
     ) -> str:
+        if self._is_revisit_keyword_intent(question):
+            return self._build_revisit_keyword_markdown(
+                question=question,
+                sql=sql,
+                query_result=query_result,
+            )
+
         if self._should_use_compact_answer(question, query_result):
             return self._build_compact_markdown(
                 question=question,
@@ -1179,6 +1336,195 @@ LIMIT 10
         lines.append(sql)
         lines.append("```")
         return "\n".join(lines).strip()
+
+    def _build_revisit_keyword_markdown(
+        self,
+        question: str,
+        sql: str,
+        query_result: pd.DataFrame,
+    ) -> str:
+        lines: List[str] = []
+        lines.append("## 리뷰 분석 결과")
+        lines.append(f"- 질문: {question}")
+        lines.append("- 분석 범위: 전체 지점")
+        lines.append("")
+
+        if len(query_result) == 0:
+            lines.append("재방문 키워드가 포함된 리뷰를 찾지 못했습니다.")
+            lines.append("")
+            lines.append("```sql")
+            lines.append(sql)
+            lines.append("```")
+            return "\n".join(lines).strip()
+
+        work = query_result.copy()
+        numeric_columns = ("mention_count", "ratio_pct", "coverage_review_count", "coverage_ratio_pct", "total_reviews")
+        for column in numeric_columns:
+            if column in work.columns:
+                work[column] = pd.to_numeric(work[column], errors="coerce").fillna(0.0)
+
+        overall = work[work["scope"] == "전체"].copy()
+        branch = work[work["scope"] == "지점별"].copy()
+        overall = overall.sort_values("mention_count", ascending=False)
+        branch = branch.sort_values(["branch_name", "mention_count"], ascending=[True, False])
+
+        total_reviews = int(overall.iloc[0]["total_reviews"]) if len(overall) else int(work["total_reviews"].max())
+        coverage_count = int(overall.iloc[0]["coverage_review_count"]) if len(overall) else int(
+            work["coverage_review_count"].max()
+        )
+        coverage_ratio = float(overall.iloc[0]["coverage_ratio_pct"]) if len(overall) else float(
+            work["coverage_ratio_pct"].max()
+        )
+
+        lines.append("### 1) 재방문 키워드 (전체)")
+        if len(overall) == 0:
+            lines.append("전체 키워드를 계산할 데이터가 없습니다.")
+        else:
+            overall_table = overall[["keyword", "mention_count", "ratio_pct"]].head(10).copy()
+            overall_table = self._mask_sensitive_df(overall_table)
+            overall_table = self._localize_columns(overall_table)
+            lines.append(self._df_to_markdown(overall_table))
+        lines.append("")
+
+        lines.append("### 2) 지점별 재방문 키워드")
+        if len(branch) == 0:
+            lines.append("지점별 키워드를 계산할 데이터가 없습니다.")
+        else:
+            branch_top = branch.groupby("branch_name", group_keys=False).head(3).copy()
+            branch_top = branch_top[["branch_name", "keyword", "mention_count", "ratio_pct"]]
+            branch_top = self._mask_sensitive_df(branch_top)
+            branch_top = self._localize_columns(branch_top)
+            lines.append(self._df_to_markdown(branch_top))
+        lines.append("")
+
+        lines.append("### 3) 전체 대비 비율")
+        lines.append(
+            f"- 재방문 키워드가 포함된 리뷰: **{coverage_count:,}건 / {total_reviews:,}건 ({coverage_ratio:.1f}%)**"
+        )
+        lines.append("")
+
+        if len(branch) > 0:
+            branch_coverage = (
+                branch[["branch_name", "coverage_review_count", "coverage_ratio_pct", "total_reviews"]]
+                .drop_duplicates(subset=["branch_name"])
+                .sort_values("coverage_ratio_pct", ascending=False)
+            )
+            branch_coverage_table = branch_coverage.copy()
+            branch_coverage_table = self._mask_sensitive_df(branch_coverage_table)
+            branch_coverage_table = self._localize_columns(branch_coverage_table)
+            lines.append("### 4) 지점별 재방문 키워드 포함 비율")
+            lines.append(self._df_to_markdown(branch_coverage_table))
+            lines.append("")
+        else:
+            branch_coverage = pd.DataFrame(columns=["branch_name", "coverage_review_count", "coverage_ratio_pct", "total_reviews"])
+
+        lines.append("### 5) 점주 인사이트")
+        if len(overall) > 0:
+            top = overall.iloc[0]
+            lines.append(
+                self._vary_sentence(
+                    [
+                        "- 전체에서 가장 강한 재방문 표현은 **{keyword}**이며, **{count:,}건** 언급됐습니다.",
+                        "- 전체 기준 재방문 핵심 키워드는 **{keyword}**로, 언급량은 **{count:,}건**입니다.",
+                        "- 재방문 의도를 가장 많이 드러낸 표현은 **{keyword}**이며 **{count:,}건** 포착됐습니다.",
+                    ],
+                    keyword=str(top["keyword"]),
+                    count=int(top["mention_count"]),
+                )
+            )
+        if len(branch_coverage) > 0:
+            highest = branch_coverage.iloc[0]
+            lowest = branch_coverage.iloc[-1]
+            lines.append(
+                self._vary_sentence(
+                    [
+                        "- 지점별 포함 비율은 **{high_branch}({high_ratio:.1f}%)**가 가장 높고, **{low_branch}({low_ratio:.1f}%)**가 가장 낮습니다.",
+                        "- 재방문 키워드 밀도는 **{high_branch}({high_ratio:.1f}%)**가 높고, **{low_branch}({low_ratio:.1f}%)**가 낮습니다.",
+                        "- 지점 간 재방문 언급 편차가 있습니다. 상위는 **{high_branch}({high_ratio:.1f}%)**, 하위는 **{low_branch}({low_ratio:.1f}%)**입니다.",
+                    ],
+                    high_branch=str(highest["branch_name"]),
+                    high_ratio=float(highest["coverage_ratio_pct"]),
+                    low_branch=str(lowest["branch_name"]),
+                    low_ratio=float(lowest["coverage_ratio_pct"]),
+                )
+            )
+        if coverage_ratio >= 12.0:
+            lines.append("- 재방문 신호가 충분한 구간입니다. 상위 키워드를 멤버십/CRM 메시지 문구에 그대로 활용하면 전환율을 높이기 좋습니다.")
+        else:
+            lines.append("- 재방문 키워드 비율이 낮은 편입니다. 첫 방문 후 7일 내 재접점 메시지를 자동화해 재방문 의도 언급을 늘리는 실험이 필요합니다.")
+        lines.append("")
+
+        chart_blocks = self._build_revisit_keyword_chart_blocks(overall=overall, branch_coverage=branch_coverage)
+        if chart_blocks:
+            lines.append("### 6) 그래프")
+            lines.extend(chart_blocks)
+            lines.append("")
+
+        lines.append("```sql")
+        lines.append(sql)
+        lines.append("```")
+        return "\n".join(lines).strip()
+
+    def _build_revisit_keyword_chart_blocks(
+        self,
+        overall: pd.DataFrame,
+        branch_coverage: pd.DataFrame,
+    ) -> List[str]:
+        blocks: List[str] = []
+
+        def safe_float(value: object) -> float:
+            numeric = pd.to_numeric(value, errors="coerce")
+            if pd.isna(numeric):
+                return 0.0
+            return float(numeric)
+
+        if len(overall) >= 2:
+            overall_data: List[Dict[str, Any]] = []
+            for _, row in overall.head(8).iterrows():
+                overall_data.append(
+                    {
+                        "x": self._clip_cell(row["keyword"], max_len=20),
+                        "mention_count": safe_float(row["mention_count"]),
+                        "ratio_pct": safe_float(row["ratio_pct"]),
+                    }
+                )
+            spec = {
+                "chartType": "bar",
+                "title": "재방문 키워드 영향도 (전체)",
+                "subtitle": "언급량(건수)과 전체 대비 비율(%)을 함께 표시합니다.",
+                "xKey": "x",
+                "series": [
+                    {"key": "mention_count", "label": "언급 리뷰수", "format": "count"},
+                    {"key": "ratio_pct", "label": "전체 대비 비율", "format": "percent"},
+                ],
+                "data": overall_data,
+            }
+            blocks.append("```chart\n" + json.dumps(spec, ensure_ascii=False) + "\n```")
+
+        if len(branch_coverage) >= 2:
+            coverage_data: List[Dict[str, Any]] = []
+            for _, row in branch_coverage.iterrows():
+                coverage_data.append(
+                    {
+                        "x": self._clip_cell(row["branch_name"], max_len=14),
+                        "coverage_ratio_pct": safe_float(row["coverage_ratio_pct"]),
+                        "coverage_review_count": safe_float(row["coverage_review_count"]),
+                    }
+                )
+            spec = {
+                "chartType": "bar",
+                "title": "지점별 재방문 키워드 포함 비율",
+                "subtitle": "비율(%)과 포함 리뷰수(건수)를 함께 비교합니다.",
+                "xKey": "x",
+                "series": [
+                    {"key": "coverage_ratio_pct", "label": "포함 비율", "format": "percent"},
+                    {"key": "coverage_review_count", "label": "포함 리뷰수", "format": "count"},
+                ],
+                "data": coverage_data,
+            }
+            blocks.append("```chart\n" + json.dumps(spec, ensure_ascii=False) + "\n```")
+
+        return blocks
 
     def _build_chart_markdown(
         self,
@@ -1879,6 +2225,12 @@ ORDER BY s.review_date ASC
                 )
             )
 
+        if len(bullets) >= 4 and self.answer_variation_temperature >= 0.7:
+            anchor = bullets[0]
+            tail = bullets[1:]
+            self._rng.shuffle(tail)
+            return [anchor, *tail]
+
         return bullets
 
     @staticmethod
@@ -2035,6 +2387,10 @@ ORDER BY s.review_date ASC
             "negative_review_count": "부정 리뷰 건수",
             "negative_ratio_pct": "부정 비율(%)",
             "keyword": "키워드",
+            "scope": "구분",
+            "coverage_review_count": "재방문 키워드 포함 리뷰수",
+            "coverage_ratio_pct": "재방문 키워드 포함 비율(%)",
+            "total_reviews": "전체 리뷰수",
             "occurrences": "언급 건수",
             "pct_of_recent": "최근 비율(%)",
             "count": "건수",

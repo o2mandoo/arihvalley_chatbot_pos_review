@@ -1,4 +1,5 @@
 import json
+import random
 import re
 from datetime import date
 from dataclasses import dataclass
@@ -80,6 +81,9 @@ class SalesAnalysisService:
         self.client = OpenAI(api_key=openai_api_key)
         self.model = openai_model
         self.openai_temperature = max(0.0, min(float(openai_temperature), 1.0))
+        self.sql_generation_temperature = min(0.35, self.openai_temperature)
+        self.answer_variation_temperature = min(1.0, max(0.65, self.openai_temperature * 1.8 + 0.15))
+        self._rng = random.SystemRandom()
         self.max_sql_rows = max_sql_rows
         self.max_table_rows = max_table_rows
 
@@ -688,7 +692,7 @@ Rules:
     def _generate_sql(self, question: str) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
-            temperature=self.openai_temperature,
+            temperature=self.sql_generation_temperature,
             messages=[
                 {
                     "role": "system",
@@ -786,7 +790,7 @@ Rules:
                 lines.append(f"_표시는 상위 {self.max_table_rows}행입니다. (전체 {len(query_result)}행)_")
         lines.append("")
 
-        lines.append("### 2) 빠른 해석")
+        lines.append("### 2) 인사이트")
         lines.extend(self._build_insights(question, query_result))
         lines.append("")
 
@@ -821,7 +825,7 @@ Rules:
         else:
             lines.append(self._df_to_markdown(self._prepare_display_table(query_result.head(self.max_table_rows))))
         lines.append("")
-        lines.append("### 빠른 해석")
+        lines.append("### 인사이트")
         lines.extend(self._build_insights(question, query_result))
         lines.append("")
 
@@ -1250,7 +1254,13 @@ ORDER BY sales_date ASC
         bullets.extend(self._build_period_comparison_insights(question, query_result))
 
         if not bullets:
-            bullets.append("- 표 데이터를 기반으로 추가 해석을 진행하려면 비교 기준(기간/채널/카테고리)을 지정해 주세요.")
+            bullets.append("- 현재 표 기준 핵심 인사이트는 결과 요약 수준입니다. 기간/채널/카테고리를 지정하면 원인까지 더 깊게 분석할 수 있습니다.")
+
+        if len(bullets) >= 4 and self.answer_variation_temperature >= 0.65:
+            anchor = bullets[0]
+            tail = bullets[1:]
+            self._rng.shuffle(tail)
+            return [anchor, *tail]
         return bullets
 
     def _build_period_comparison_insights(self, question: str, query_result: pd.DataFrame) -> List[str]:
