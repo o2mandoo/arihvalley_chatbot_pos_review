@@ -3,6 +3,12 @@
 점주 친화형 챗봇 데모 프로젝트입니다.  
 웹에서 질문하면 리뷰 분석/매출 분석을 자동 분류하고, `text2SQL + 인사이트 + 차트` 형태로 답변합니다.
 
+<img width="2675" height="1268" alt="image" src="https://github.com/user-attachments/assets/a2828410-54f1-4b26-a68a-79bfa076aefb" />
+<img width="932" height="1162" alt="image" src="https://github.com/user-attachments/assets/0a5054f6-5d4b-430c-b60e-4f3051aafb9c" />
+<img width="568" height="1284" alt="image" src="https://github.com/user-attachments/assets/7f4a0979-b084-41a1-af03-47758d794ae9" />
+<img width="592" height="1636" alt="image" src="https://github.com/user-attachments/assets/d7015fa4-2502-4864-bc01-48879673c05e" />
+
+
 ## 0) 프로젝트 의도
 
 이 프로젝트는 "데이터가 있어도 점주가 빠르게 의사결정하기 어렵다"는 문제를 해결하기 위한 데모입니다.
